@@ -1,0 +1,175 @@
+"""Тесты отчёта о прогоне: статусы, решения, замены и сравнение."""
+
+from sql_query_agent.domain_comparison import ComparisonVerdict
+from sql_query_agent.run.report import RunStatus, build_report
+
+UNKNOWN = [
+    {
+        "kind": "column",
+        "table": "sku",
+        "name": "product_colr_id",
+        "candidates": [
+            {"name": "product_color_id", "score": 96.8},
+            {"name": "product_id", "score": 80.0},
+        ],
+    }
+]
+ORIGINAL = "select * from sku where product_colr_id = 1"
+FIXED = "select * from sku where product_color_id = 1"
+
+
+def _values(**overrides: object) -> dict[str, object]:
+    """Базовое состояние прогона с переопределениями."""
+
+    values: dict[str, object] = {
+        "original_sql": ORIGINAL,
+        "current_sql": ORIGINAL,
+        "schema_checked": True,
+        "schema_result": {"unknown": UNKNOWN},
+    }
+    values.update(overrides)
+    return values
+
+
+def test_awaiting_fix_decision() -> None:
+    """Остановка на исправлении даёт статус ожидания решения."""
+
+    report = build_report(
+        "t1",
+        _values(fixed_sql=FIXED),
+        [{"step": "schema_fix"}],
+    )
+
+    assert report.status is RunStatus.AWAITING_DECISION
+    assert report.awaiting_decision is True
+    assert report.step == "schema_fix"
+    assert report.status.is_terminal is False
+
+
+def test_replacements_are_derived_from_text() -> None:
+    """Замены считаются по тексту запроса, а не по обещаниям модели."""
+
+    report = build_report("t1", _values(fixed_sql=FIXED), [{"step": "schema_fix"}])
+
+    assert report.fix is not None
+    assert [item.new_name for item in report.fix.replacements] == ["product_color_id"]
+    assert report.fix.replacements[0].old_name == "product_colr_id"
+    assert report.fix.replacements[0].kind == "column"
+
+
+def test_missing_replacement_is_not_reported() -> None:
+    """Если модель ничего не заменила, список замен пуст."""
+
+    report = build_report("t1", _values(fixed_sql=ORIGINAL), [{"step": "schema_fix"}])
+
+    assert report.fix is not None
+    assert report.fix.replacements == []
+
+
+def test_declined_fix_is_terminal() -> None:
+    """Отказ от исправления завершает прогон."""
+
+    report = build_report(
+        "t1",
+        _values(fix_declined=True, status="fix_declined"),
+        [],
+    )
+
+    assert report.status is RunStatus.FIX_DECLINED
+    assert report.awaiting_decision is False
+    assert report.decisions["fix"] == "declined"
+    assert report.decisions["index"] == "not_offered"
+
+
+def test_declined_index_is_terminal_and_keeps_step_free() -> None:
+    """Отказ от индекса завершает прогон без применения."""
+
+    report = build_report(
+        "t1",
+        _values(
+            fixed_sql=FIXED,
+            fix_applied=True,
+            index_declined=True,
+            status="index_declined",
+            before_stats={"median_ms": 10.0, "minimum_ms": 9.0, "maximum_ms": 11.0, "runs": 3},
+            proposal={"ddl": "CREATE INDEX i ON sku (product_color_id)", "reason": "по фильтру"},
+        ),
+        [],
+    )
+
+    assert report.status is RunStatus.INDEX_DECLINED
+    assert report.decisions == {"fix": "accepted", "index": "declined"}
+    assert report.comparison is None
+    assert report.index is not None
+
+
+def test_completed_run_without_speedup_is_marked() -> None:
+    """Случай без ускорения попадает в отчёт как обычный результат."""
+
+    report = build_report(
+        "t1",
+        _values(
+            status="compared",
+            apply_result={
+                "applied": True,
+                "before_median_ms": 15.0,
+                "after_median_ms": 14.9,
+                "speedup": 1.007,
+                "verdict": "no_speedup",
+                "improved": False,
+                "reason": "Низкая селективность",
+                "before": {"median_ms": 15.0, "minimum_ms": 14.0, "maximum_ms": 16.0, "runs": 3},
+                "after": {"median_ms": 14.9, "minimum_ms": 14.1, "maximum_ms": 15.8, "runs": 3},
+            },
+        ),
+        [],
+    )
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.comparison is not None
+    assert report.comparison.no_speedup is True
+    assert report.comparison.verdict is ComparisonVerdict.NO_SPEEDUP
+
+
+def test_slight_speedup_counts_as_no_speedup() -> None:
+    """Ускорение в пределах порога значимости не считается ускорением."""
+
+    report = build_report(
+        "t1",
+        _values(
+            status="compared",
+            apply_result={
+                "applied": True,
+                "before_median_ms": 100.0,
+                "after_median_ms": 95.0,
+                "speedup": 1.05,
+                "verdict": "slight_speedup",
+                "improved": True,
+            },
+        ),
+        [],
+    )
+
+    assert report.comparison is not None
+    assert report.comparison.no_speedup is True
+
+
+def test_failed_run_is_terminal() -> None:
+    """Ошибка замера завершает прогон со статусом ошибки."""
+
+    report = build_report(
+        "t1",
+        _values(status="measure_failed", warnings=["Запрос превысил время выполнения"]),
+        [],
+    )
+
+    assert report.status is RunStatus.FAILED
+    assert report.error == "Запрос превысил время выполнения"
+
+
+def test_report_without_interrupts_and_without_measure_is_failed() -> None:
+    """Прогон без замера и без решения считается незавершённым."""
+
+    report = build_report("t1", _values(), [])
+
+    assert report.status is RunStatus.FAILED

@@ -1,0 +1,55 @@
+[project]
+name = "sql-query-agent-codex"
+version = "0.1.0"
+description = "Учебный LLM-агент: проверка имён в SQL-запросе и подбор индексов с замером времени"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "nicegui>=3.14",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=3.1",
+    "langchain-gigachat>=0.5.1",
+    "psycopg[binary,pool]>=3.2",
+    "rapidfuzz>=3.9",
+    "prometheus-client>=0.21",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+sql-index-advisor = "sql_query_agent.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sql_query_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: тесты, требующие локального PostgreSQL с базой products (пропускаются, если база недоступна)",
+    "llm: тесты, требующие реальной модели GigaChat (запускаются с --run-llm)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
