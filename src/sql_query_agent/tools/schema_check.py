@@ -17,6 +17,39 @@ from sql_query_agent.domain import (
 )
 
 
+def unfixable_names(unknown: list[UnknownName]) -> list[UnknownName]:
+    """Ненайденные имена, для которых не нашлось ни одного кандидата."""
+
+    return [item for item in unknown if not item.is_fixable]
+
+
+def can_fix_all(unknown: list[UnknownName]) -> bool:
+    """Есть ли чем исправить запрос: кандидаты есть у всех ненайденных имён."""
+
+    return bool(unknown) and not unfixable_names(unknown)
+
+
+def describe_unfixable(unknown: list[UnknownName]) -> str:
+    """Сообщение о ненайденных именах, которые нечем заменить.
+
+    Имена берутся из результата проверки, то есть ровно из запроса: текст
+    сообщения не придумывает ничего своего.
+    """
+
+    missing = unfixable_names(unknown)
+    if not missing:
+        return ""
+
+    lines: list[str] = []
+    for item in missing:
+        if item.kind is UnknownNameKind.TABLE:
+            lines.append(f"таблица «{item.name}» не найдена")
+        else:
+            lines.append(f"колонка «{item.name}» не найдена в таблице «{item.table}»")
+    lines.append("Подходящих замен нет: исправьте запрос вручную.")
+    return "\n".join(lines)
+
+
 def suggest_names(
     value: str,
     variants: list[str],

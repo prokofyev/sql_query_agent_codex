@@ -28,6 +28,7 @@ from sql_query_agent.ui.view import (
     RESULT_CAPTION,
     SUBMIT_LABEL,
     TITLE,
+    UNFIXABLE_CAPTION,
     RunView,
     build_preset_labels,
     form_enabled,
@@ -127,6 +128,10 @@ def register_pages(
             status_label = ui.label().classes("text-base")
             warnings_label = ui.label().classes("text-sm text-orange-700 whitespace-pre-line")
             message_label = ui.label().classes("text-sm text-red-700")
+            unfixable_card = ui.column().classes("gap-1")
+            with unfixable_card:
+                ui.label(UNFIXABLE_CAPTION).classes("text-sm text-gray-500")
+                unfixable_label = ui.label().classes("whitespace-pre-line")
             fix_card = ui.column().classes("gap-1")
             with fix_card:
                 ui.label(FIX_CAPTION).classes("text-sm text-gray-500")
@@ -154,6 +159,8 @@ def register_pages(
             status_label.text = view.status_text
             warnings_label.text = "\n".join(view.warnings)
             message_label.text = "\n".join(view.errors)
+            unfixable_card.visible = bool(view.unfixable_message)
+            unfixable_label.text = view.unfixable_message
             fix_card.visible = bool(view.fixed_sql)
             fix_label.text = view.fixed_sql or ""
             replacements_label.text = "\n".join(view.replacements)

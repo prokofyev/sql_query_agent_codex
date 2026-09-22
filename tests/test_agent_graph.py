@@ -10,6 +10,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from sql_query_agent.agent import nodes
 from sql_query_agent.agent.graph import (
     APPLY_NODE,
     CONFIRM_FIX_NODE,
@@ -18,6 +19,7 @@ from sql_query_agent.agent.graph import (
     MEASURE_NODE,
     PREPARE_FIX_NODE,
     PREPARE_INDEX_NODE,
+    REPORT_UNFIXABLE_NODE,
     build_graph,
 )
 from sql_query_agent.db.catalog import SchemaCatalog
@@ -39,6 +41,8 @@ CATALOG = SchemaCatalog.from_rows(
 GOOD_SQL = "select * from sku where product_id = 1"
 TYPO_SQL = "select * from sku where product_colr_id = 1"
 FIXED_SQL = "select * from sku where product_color_id = 1"
+MISSING_TABLE = "zzz_table"
+MISSING_COLUMN = "qqq"
 
 
 def _graph(model: FakeModel, measure: FakeMeasure, apply: FakeApply) -> Any:
@@ -255,14 +259,165 @@ async def test_graph_declares_expected_nodes() -> None:
 
     graph = _graph(FakeModel(), FakeMeasure(), FakeApply())
 
-    nodes = set(graph.get_graph().nodes)
+    graph_nodes = set(graph.get_graph().nodes)
 
     assert {
         EXTRACT_NODE,
         PREPARE_FIX_NODE,
         CONFIRM_FIX_NODE,
+        REPORT_UNFIXABLE_NODE,
         MEASURE_NODE,
         PREPARE_INDEX_NODE,
         CONFIRM_INDEX_NODE,
         APPLY_NODE,
-    } <= nodes
+    } <= graph_nodes
+
+
+def test_needs_fix_routes_clean_query_to_measure() -> None:
+    """Без ненайденных имён исправлять нечего."""
+
+    route = nodes.needs_fix(
+        {"schema_checked": True, "schema_result": {"unknown": []}}
+    )
+
+    assert route == "measure"
+
+
+def test_needs_fix_routes_fixable_names_to_prepare_fix() -> None:
+    """Имена с кандидатами идут в исправление."""
+
+    route = nodes.needs_fix(
+        {
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "column",
+                        "table": "sku",
+                        "name": "product_colr_id",
+                        "candidates": [{"name": "product_color_id", "score": 96.0}],
+                    }
+                ]
+            },
+        }
+    )
+
+    assert route == "prepare_fix"
+
+
+def test_needs_fix_routes_unfixable_names_to_report() -> None:
+    """Имя без кандидатов ведёт к терминальному сообщению."""
+
+    route = nodes.needs_fix(
+        {
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "table",
+                        "table": "zzz_table",
+                        "name": "zzz_table",
+                        "candidates": [],
+                    }
+                ]
+            },
+        }
+    )
+
+    assert route == "report_unfixable"
+
+
+def test_needs_fix_skips_check_when_tool_was_not_called() -> None:
+    """Без выполненной проверки имён маршрут идёт к замеру."""
+
+    assert nodes.needs_fix({"schema_checked": False}) == "measure"
+
+
+async def test_unfixable_names_end_session_without_model_or_measure() -> None:
+    """Имя без замен завершает сессию: модель исправления и замер не вызываются."""
+
+    model = FakeModel(
+        entities=[{"table": MISSING_TABLE, "columns": []}],
+        fixed_sql=FIXED_SQL,
+    )
+    measure = FakeMeasure()
+    graph = _graph(model, measure, FakeApply())
+    config = _config("unfixable-table")
+
+    await graph.ainvoke({"current_sql": f"select * from {MISSING_TABLE}"}, config)
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.values["status"] == nodes.UNFIXABLE_STATUS
+    assert model.fix_calls == 0
+    assert model.index_calls == 0
+    assert measure.calls == 0
+    assert await _interrupts(graph, config) == []
+    assert MISSING_TABLE in snapshot.values["unfixable_message"]
+
+
+async def test_unfixable_column_names_table_in_message() -> None:
+    """Сообщение о ненайденной колонке содержит колонку и таблицу из запроса."""
+
+    model = FakeModel(entities=[{"table": "sku", "columns": [MISSING_COLUMN]}])
+    graph = _graph(model, FakeMeasure(), FakeApply())
+    config = _config("unfixable-column")
+
+    await graph.ainvoke(
+        {"current_sql": f"select * from sku where {MISSING_COLUMN} = 1"}, config
+    )
+
+    snapshot = await graph.aget_state(config)
+    message = snapshot.values["unfixable_message"]
+    assert MISSING_COLUMN in message
+    assert "sku" in message
+
+
+async def test_mixed_case_ends_session_without_partial_fix() -> None:
+    """Если одно имя исправимо, а другое нет, частичная правка не выполняется."""
+
+    model = FakeModel(
+        entities=[{"table": "sku", "columns": ["product_colr_id", MISSING_COLUMN]}],
+        fixed_sql=FIXED_SQL,
+    )
+    measure = FakeMeasure()
+    graph = _graph(model, measure, FakeApply())
+    config = _config("mixed-unfixable")
+
+    await graph.ainvoke(
+        {"current_sql": f"select * from sku where product_colr_id = 1 and {MISSING_COLUMN} = 2"},
+        config,
+    )
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.values["status"] == nodes.UNFIXABLE_STATUS
+    assert model.fix_calls == 0
+    assert measure.calls == 0
+    assert "product_colr_id" not in snapshot.values["unfixable_message"]
+
+
+async def test_prepare_fix_refuses_to_run_without_candidates() -> None:
+    """Прямой вызов исправления без кандидатов не доходит до модели."""
+
+    model = FakeModel(fixed_sql=FIXED_SQL)
+
+    update = await nodes.prepare_fix(
+        {
+            "current_sql": f"select * from {MISSING_TABLE}",
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "table",
+                        "table": MISSING_TABLE,
+                        "name": MISSING_TABLE,
+                        "candidates": [],
+                    }
+                ]
+            },
+        },
+        model=model,
+    )
+
+    assert model.fix_calls == 0
+    assert update["status"] == nodes.UNFIXABLE_STATUS
+    assert update["fixed_sql"] is None

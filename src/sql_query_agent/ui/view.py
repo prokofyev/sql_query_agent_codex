@@ -27,6 +27,7 @@ RESULT_CAPTION = "Результат замера"
 REPLACEMENTS_CAPTION = "Замены имён"
 SCHEMA_OK_CAPTION = "Проверка имён пройдена: все имена найдены в схеме"
 SCHEMA_SKIPPED_CAPTION = "Проверка имён не выполнялась"
+UNFIXABLE_CAPTION = "Имена не найдены, подходящих замен нет"
 
 EMPTY_INPUT_MESSAGE = "Запрос не задан"
 NO_DECISION = ""
@@ -34,6 +35,7 @@ NO_DECISION = ""
 STATUS_TEXT = {
     RunStatus.AWAITING_DECISION: "Нужно решение пользователя",
     RunStatus.FIX_DECLINED: "Отказ от исправления: обработка завершена",
+    RunStatus.UNKNOWN_UNFIXABLE: "Имена не найдены, замен нет: обработка завершена",
     RunStatus.INDEX_DECLINED: "Отказ от индекса: база не изменялась",
     RunStatus.COMPLETED: "Прогон завершён",
     RunStatus.FAILED: "Прогон завершился ошибкой",
@@ -62,6 +64,7 @@ class RunView:
     no_speedup: bool = False
     schema_checked: bool = False
     schema_text: str = ""
+    unfixable_message: str = ""
     awaiting_decision: bool = False
     step: str | None = None
     thread_id: str = ""
@@ -160,7 +163,12 @@ def build_run_view(report: RunReport | None, *, sql: str = "") -> RunView:
 
     result_text, no_speedup = _result_text(report)
     comparison = report.comparison
-    schema_text = SCHEMA_OK_CAPTION if report.schema_checked else SCHEMA_SKIPPED_CAPTION
+    if not report.schema_checked:
+        schema_text = SCHEMA_SKIPPED_CAPTION
+    elif report.unfixable_message:
+        schema_text = UNFIXABLE_CAPTION
+    else:
+        schema_text = SCHEMA_OK_CAPTION
     return RunView(
         status=report.status.value,
         status_text=STATUS_TEXT.get(report.status, report.status.value),
@@ -183,6 +191,7 @@ def build_run_view(report: RunReport | None, *, sql: str = "") -> RunView:
         no_speedup=no_speedup,
         schema_checked=report.schema_checked,
         schema_text=schema_text,
+        unfixable_message=report.unfixable_message,
         awaiting_decision=report.awaiting_decision,
         step=report.step,
         thread_id=report.thread_id,
@@ -246,6 +255,7 @@ __all__ = [
     "RESULT_CAPTION",
     "SCHEMA_OK_CAPTION",
     "SCHEMA_SKIPPED_CAPTION",
+    "UNFIXABLE_CAPTION",
     "SUBMIT_LABEL",
     "TITLE",
     "RunView",

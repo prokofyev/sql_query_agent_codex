@@ -17,6 +17,72 @@ UNKNOWN = [
 ORIGINAL = "select * from sku where product_colr_id = 1"
 FIXED = "select * from sku where product_color_id = 1"
 
+UNFIXABLE = [
+    {
+        "kind": "table",
+        "table": "prodcts",
+        "name": "prodcts",
+        "candidates": [],
+    }
+]
+UNFIXABLE_MESSAGE = (
+    "таблица «prodcts» не найдена\nПодходящих замен нет: исправьте запрос вручную."
+)
+
+
+def test_unfixable_run_is_terminal_and_not_an_error() -> None:
+    """Прогон без замен завершён, а не провален: сообщение есть, ошибки нет."""
+
+    report = build_report(
+        "t1",
+        {
+            "original_sql": "select * from prodcts",
+            "current_sql": "select * from prodcts",
+            "schema_checked": True,
+            "schema_result": {"unknown": UNFIXABLE},
+            "unfixable_message": UNFIXABLE_MESSAGE,
+            "status": "unknown_unfixable",
+        },
+        [],
+    )
+
+    assert report.status is RunStatus.UNKNOWN_UNFIXABLE
+    assert report.status.is_terminal is True
+    assert report.awaiting_decision is False
+    assert report.error is None
+    assert report.unfixable_message == UNFIXABLE_MESSAGE
+    assert report.unknown == UNFIXABLE
+
+
+def test_unfixable_run_has_no_fix_or_index_proposal() -> None:
+    """Прогон без замен не показывает ни исправления, ни предложения об индексе."""
+
+    report = build_report(
+        "t2",
+        {
+            "original_sql": "select * from prodcts",
+            "current_sql": "select * from prodcts",
+            "schema_checked": True,
+            "schema_result": {"unknown": UNFIXABLE},
+            "unfixable_message": UNFIXABLE_MESSAGE,
+            "status": "unknown_unfixable",
+        },
+        [],
+    )
+
+    assert report.fix is None
+    assert report.index is None
+    assert report.comparison is None
+    assert report.decisions == {"fix": "not_required", "index": "not_offered"}
+
+
+def test_fixable_run_has_no_unfixable_message() -> None:
+    """В исправимом прогоне сообщения о неисправимых именах нет."""
+
+    report = build_report("t3", _values(fixed_sql=FIXED), [{"step": "schema_fix"}])
+
+    assert report.unfixable_message == ""
+
 
 def _values(**overrides: object) -> dict[str, object]:
     """Базовое состояние прогона с переопределениями."""

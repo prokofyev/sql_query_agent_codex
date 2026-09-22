@@ -55,6 +55,33 @@ def test_measure_histogram_accepts_durations() -> None:
     assert 'sqa_measure_seconds_count{phase="before"} 1.0' in registry.text()
 
 
+def test_unfixable_run_counts_as_run_without_measurements() -> None:
+    """Прогон без замен считается в счётчике прогонов и не трогает гистограмму."""
+
+    from sql_query_agent.observability.run_metrics import observe_run
+    from sql_query_agent.run.report import build_report
+
+    registry = _Registry()
+    report = build_report(
+        "t-unfixable",
+        {
+            "original_sql": "select * from prodcts",
+            "current_sql": "select * from prodcts",
+            "schema_checked": True,
+            "schema_result": {"unknown": []},
+            "status": "unknown_unfixable",
+        },
+        [],
+    )
+
+    observe_run(report, registry.metrics)
+
+    rendered = registry.text()
+    assert 'sqa_runs_total{status="unknown_unfixable"} 1.0' in rendered
+    assert "sqa_measure_seconds_count" not in rendered
+    assert "sqa_indexes_applied_total 0.0" in rendered
+
+
 def test_labels_have_no_sql_text() -> None:
     """Метки ограничены низкой кардинальностью и не содержат текста запроса."""
 

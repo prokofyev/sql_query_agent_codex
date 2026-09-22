@@ -26,6 +26,7 @@ class RunStatus(StrEnum):
 
     AWAITING_DECISION = "awaiting_decision"
     FIX_DECLINED = "fix_declined"
+    UNKNOWN_UNFIXABLE = "unknown_unfixable"
     INDEX_DECLINED = "index_declined"
     COMPLETED = "compared"
     FAILED = "failed"
@@ -99,6 +100,7 @@ class RunReport(BaseModel):
     schema_checked: bool = False
     unknown: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    unfixable_message: str = ""
     fix: FixProposal | None = None
     index: IndexProposal | None = None
     comparison: ComparisonResult | None = None
@@ -189,6 +191,8 @@ def _status(values: dict[str, Any], step: str | None) -> RunStatus:
     raw = str(values.get("status") or "")
     if raw == "fix_declined":
         return RunStatus.FIX_DECLINED
+    if raw == "unknown_unfixable":
+        return RunStatus.UNKNOWN_UNFIXABLE
     if raw == "index_declined":
         return RunStatus.INDEX_DECLINED
     if raw == "compared":
@@ -260,14 +264,7 @@ def build_report(
         )
 
     warnings = [str(item) for item in (values.get("warnings") or [])]
-    error = next(
-        (
-            warning
-            for warning in warnings
-            if status is RunStatus.FAILED
-        ),
-        None,
-    )
+    error = next((warning for warning in warnings if status is RunStatus.FAILED), None)
     return RunReport(
         thread_id=thread_id,
         status=status,
@@ -277,6 +274,7 @@ def build_report(
         schema_checked=bool(values.get("schema_checked")),
         unknown=list((values.get("schema_result") or {}).get("unknown") or []),
         warnings=warnings,
+        unfixable_message=str(values.get("unfixable_message") or ""),
         fix=fix,
         index=index,
         comparison=_comparison(values.get("apply_result")),

@@ -34,6 +34,53 @@ CATALOG = SchemaCatalog.from_rows(
 COLOUR_COLUMN = "product_color_id"
 
 
+async def test_unfixable_name_ends_session_with_real_model(
+    require_postgres: None,
+    postgres_available: bool,
+) -> None:
+    """Имя без похожих названий завершает прогон: модель исправления не вызывается.
+
+    Настоящая модель должна честно передать несуществующее имя инструменту,
+    а решение о завершении принимает система по пустому списку кандидатов.
+    """
+
+    from langgraph.checkpoint.memory import InMemorySaver
+    from psycopg_pool import AsyncConnectionPool
+
+    from sql_query_agent.db.pool import create_pool, open_pool
+    from sql_query_agent.tools.check_schema import SchemaChecker
+    from tests.fakes import FakeApply, FakeMeasure
+
+    settings = Settings()
+    sql = "select * from zzz_no_such_table"
+    pool: AsyncConnectionPool = create_pool(settings.database.dsn)
+    await open_pool(pool)
+    try:
+        graph = build_graph(
+            model=GigaChatAdvisor(settings.gigachat),
+            checker=SchemaChecker(
+                pool,
+                schema=settings.database.schema_name,
+                threshold=settings.validation.fuzzy_threshold,
+                suggestion_limit=settings.validation.suggestion_limit,
+            ),
+            measure_tool=FakeMeasure(),
+            apply_tool=FakeApply(),
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "llm-unfixable"}}
+
+        await graph.ainvoke({"original_sql": sql, "current_sql": sql}, config)
+
+        snapshot = await graph.aget_state(config)
+        report = build_report("llm-unfixable", dict(snapshot.values), [])
+        assert report.status is RunStatus.UNKNOWN_UNFIXABLE
+        assert not snapshot.interrupts
+        assert "zzz_no_such_table" in report.unfixable_message
+    finally:
+        await pool.close()
+
+
 def test_credentials_are_configured() -> None:
     """Креденшелы GigaChat заданы в окружении."""
 

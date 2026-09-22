@@ -4,11 +4,13 @@ from typing import Any
 
 from sql_query_agent.api.errors import INVALID_SQL
 from tests.api_fakes import FakeWorld, build_test_client
-from tests.fakes import FakeApply, FakeModel
+from tests.fakes import FakeApply, FakeMeasure, FakeModel
 
 GOOD_SQL = "select * from sku where product_id = 1"
 TYPO_SQL = "select * from sku where product_colr_id = 1"
 FIXED_SQL = "select * from sku where product_color_id = 1"
+MISSING_TABLE = "zzz_table"
+UNFIXABLE_SQL = f"select * from {MISSING_TABLE}"
 
 
 def _typo_world() -> FakeWorld:
@@ -31,6 +33,29 @@ async def test_start_run_reports_awaiting_decision() -> None:
     assert payload["fix"]["fixed_sql"] == FIXED_SQL
     assert payload["fix"]["replacements"][0]["new_name"] == "product_color_id"
     assert payload["thread_id"]
+
+
+async def test_unfixable_names_are_reported_without_decision() -> None:
+    """API отдаёт сообщение о ненайденных именах и не ждёт решения."""
+
+    world = FakeWorld(
+        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+        measure=FakeMeasure(),
+    )
+    client, _ = build_test_client(world)
+
+    response = await client.post("/runs", json={"sql": UNFIXABLE_SQL})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "unknown_unfixable"
+    assert payload["awaiting_decision"] is False
+    assert payload["step"] is None
+    assert MISSING_TABLE in payload["unfixable_message"]
+    assert payload["fix"] is None
+    assert payload["index"] is None
+    assert payload["error"] is None
+    assert world.measure.calls == 0
 
 
 async def test_decision_continues_run() -> None:

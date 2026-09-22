@@ -107,6 +107,7 @@ def _report(payload: dict[str, Any]) -> RunReport:
             "schema_checked": payload.get("schema_checked"),
             "schema_result": {"unknown": payload.get("unknown") or []},
             "warnings": payload.get("warnings") or [],
+            "unfixable_message": payload.get("unfixable_message") or "",
             "fixed_sql": (payload.get("fix") or {}).get("fixed_sql"),
             "proposal": _proposal(payload),
             "before_stats": _before_stats(payload),

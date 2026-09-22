@@ -16,6 +16,7 @@ from sql_query_agent.ui.view import (
     PROGRESS_CAPTION,
     SCHEMA_OK_CAPTION,
     SCHEMA_SKIPPED_CAPTION,
+    UNFIXABLE_CAPTION,
     RunView,
     build_preset_labels,
     build_run_view,
@@ -30,6 +31,8 @@ from tests.fakes import FakeApply, FakeMeasure, FakeModel
 GOOD_SQL = "select * from sku where product_id = 1"
 TYPO_SQL = "select * from sku where product_colr_id = 1"
 FIXED_SQL = "select * from sku where product_color_id = 1"
+MISSING_TABLE = "zzz_table"
+UNFIXABLE_SQL = "select * from zzz_table"
 
 PRESETS = [
     {"id": "point-lookup", "title": "Точечная выборка", "sql": GOOD_SQL},
@@ -320,6 +323,82 @@ def test_successful_schema_check_is_reported() -> None:
     assert view.warnings == []
 
 
+def test_unfixable_view_shows_message_without_fix_card() -> None:
+    """Экран без замен показывает сообщение и не показывает исправление."""
+
+    message = (
+        "таблица «zzz_table» не найдена\n"
+        "Подходящих замен нет: исправьте запрос вручную."
+    )
+    report = build_report(
+        "t1",
+        {
+            "original_sql": UNFIXABLE_SQL,
+            "current_sql": UNFIXABLE_SQL,
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "table",
+                        "table": MISSING_TABLE,
+                        "name": MISSING_TABLE,
+                        "candidates": [],
+                    }
+                ]
+            },
+            "unfixable_message": message,
+            "status": "unknown_unfixable",
+        },
+        [],
+    )
+
+    view = build_run_view(report)
+
+    assert view.unfixable_message == message
+    assert view.fixed_sql is None
+    assert view.replacements == []
+    assert view.index_ddl is None
+    assert view.awaiting_decision is False
+    assert view.needs_fix_decision is False
+    assert view.has_errors is False
+    assert view.is_terminal is True
+    assert view.schema_text == UNFIXABLE_CAPTION
+
+
+def test_unfixable_view_keeps_form_available() -> None:
+    """После завершения без замен поле ввода снова доступно."""
+
+    view = build_run_view(
+        build_report(
+            "t1",
+            {
+                "original_sql": UNFIXABLE_SQL,
+                "current_sql": UNFIXABLE_SQL,
+                "schema_checked": True,
+                "schema_result": {
+                    "unknown": [
+                        {
+                            "kind": "table",
+                            "table": MISSING_TABLE,
+                            "name": MISSING_TABLE,
+                            "candidates": [],
+                        }
+                    ]
+                },
+                "unfixable_message": "таблица «zzz_table» не найдена",
+                "status": "unknown_unfixable",
+            },
+            [],
+        )
+    )
+
+    enabled, can_submit = form_enabled(view.sql, busy=False)
+
+    assert view.is_terminal is True
+    assert enabled is True
+    assert can_submit is True
+
+
 def test_declined_index_view_is_terminal() -> None:
     """Отказ от индекса завершает экран и не оставляет решений."""
 
@@ -458,6 +537,24 @@ async def test_client_decodes_comparison_from_api() -> None:
     assert finished.status == RunStatus.COMPLETED.value
     assert finished.no_speedup is False
     assert finished.verdict is ComparisonVerdict.SPEEDUP
+
+
+async def test_client_decodes_unfixable_message_from_api() -> None:
+    """Клиент доносит сообщение о ненайденных именах до модели экрана."""
+
+    world = FakeWorld(
+        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+    )
+    client, _ = build_ui_client(world)
+
+    view = await client.start(UNFIXABLE_SQL)
+
+    assert view.status == RunStatus.UNKNOWN_UNFIXABLE.value
+    assert MISSING_TABLE in view.unfixable_message
+    assert view.fixed_sql is None
+    assert view.awaiting_decision is False
+    assert view.is_terminal is True
+    assert view.schema_text == UNFIXABLE_CAPTION
 
 
 __all__: list[Any] = []

@@ -3,8 +3,14 @@
 import pytest
 
 from sql_query_agent.db.catalog import SchemaCatalog
-from sql_query_agent.domain import ColumnNames, UnknownNameKind
-from sql_query_agent.tools.schema_check import check_entities, suggest_names
+from sql_query_agent.domain import ColumnNames, NameCandidate, UnknownName, UnknownNameKind
+from sql_query_agent.tools.schema_check import (
+    can_fix_all,
+    check_entities,
+    describe_unfixable,
+    suggest_names,
+    unfixable_names,
+)
 
 THRESHOLD = 65.0
 LIMIT = 3
@@ -133,3 +139,119 @@ def test_typo_in_table_is_detected_without_db_error(catalog: SchemaCatalog) -> N
     assert result.unknown_tables == ["prodct"]
     candidate_names = [c.name for c in result.unknown[0].candidates]
     assert "product" in candidate_names
+
+
+def _column(name: str, candidates: list[str]) -> UnknownName:
+    """Ненайденная колонка с заданными именами кандидатов."""
+
+    return UnknownName(
+        kind=UnknownNameKind.COLUMN,
+        table="sku",
+        name=name,
+        candidates=[NameCandidate(name=item, score=90.0) for item in candidates],
+    )
+
+
+def _table(name: str, candidates: list[str]) -> UnknownName:
+    """Ненайденная таблица с заданными именами кандидатов."""
+
+    return UnknownName(
+        kind=UnknownNameKind.TABLE,
+        table=name,
+        name=name,
+        candidates=[NameCandidate(name=item, score=90.0) for item in candidates],
+    )
+
+
+def test_all_names_with_candidates_are_fixable() -> None:
+    """Все ненайденные имена с кандидатами — запрос исправим."""
+
+    unknown = [_column("product_colr_id", ["product_color_id"]), _table("skuu", ["sku"])]
+
+    assert unfixable_names(unknown) == []
+    assert can_fix_all(unknown) is True
+    assert describe_unfixable(unknown) == ""
+
+
+def test_one_name_without_candidates_blocks_fixing() -> None:
+    """Имя без кандидатов делает запрос неисправимым."""
+
+    unknown = [_column("product_colr_id", ["product_color_id"]), _table("zzz", [])]
+
+    assert [item.name for item in unfixable_names(unknown)] == ["zzz"]
+    assert can_fix_all(unknown) is False
+
+
+def test_all_names_without_candidates_are_unfixable() -> None:
+    """Если кандидатов нет ни у кого, исправлять нечего."""
+
+    unknown = [_table("zzz", []), _column("qqq", [])]
+
+    assert [item.name for item in unfixable_names(unknown)] == ["zzz", "qqq"]
+    assert can_fix_all(unknown) is False
+
+
+def test_no_unknown_names_is_not_a_fix_case() -> None:
+    """Пустой список ненайденных имён — это не случай исправления."""
+
+    assert can_fix_all([]) is False
+
+
+def test_message_describes_missing_table() -> None:
+    """Сообщение о ненайденной таблице называет её и говорит об отсутствии замен."""
+
+    message = describe_unfixable([_table("prodcts", [])])
+
+    assert "таблица «prodcts» не найдена" in message
+    assert "Подходящих замен нет" in message
+    assert "колонка" not in message
+
+
+def test_message_describes_missing_column_with_table() -> None:
+    """Сообщение о ненайденной колонке указывает и колонку, и таблицу."""
+
+    message = describe_unfixable([_column("product_colr_id", [])])
+
+    assert "колонка «product_colr_id» не найдена в таблице «sku»" in message
+    assert "Подходящих замен нет" in message
+
+
+def test_message_lists_every_unfixable_name() -> None:
+    """Сообщение перечисляет все имена без кандидатов."""
+
+    message = describe_unfixable(
+        [
+            _table("prodcts", []),
+            _column("qqq", []),
+            _column("product_colr_id", ["product_color_id"]),
+        ]
+    )
+
+    lines = message.splitlines()
+    assert lines[0] == "таблица «prodcts» не найдена"
+    assert lines[1] == "колонка «qqq» не найдена в таблице «sku»"
+    assert len(lines) == 3
+
+
+def test_message_has_no_invented_names() -> None:
+    """В сообщении нет имён, которых не было во входных данных."""
+
+    message = describe_unfixable([_table("prodcts", [])])
+
+    assert "product" not in message
+
+
+def test_no_candidates_with_high_threshold(catalog: SchemaCatalog) -> None:
+    """Порог выше любого совпадения оставляет имя без кандидатов и без замен."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="product", columns=["product_colr_id"])],
+        threshold=100.0,
+        suggestion_limit=LIMIT,
+    )
+
+    missed = result.unknown[0]
+    assert missed.name == "product_colr_id"
+    assert missed.candidates == []
+    assert result.is_fixable is False

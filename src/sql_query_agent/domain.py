@@ -50,6 +50,12 @@ class UnknownName(BaseModel):
     name: str
     candidates: list[NameCandidate] = Field(default_factory=list)
 
+    @property
+    def is_fixable(self) -> bool:
+        """Есть ли чем заменить это имя."""
+
+        return bool(self.candidates)
+
 
 class SchemaCheckResult(BaseModel):
     """Результат работы инструмента проверки имён."""
@@ -59,6 +65,22 @@ class SchemaCheckResult(BaseModel):
     checked_columns: int = 0
     unknown: list[UnknownName] = Field(default_factory=list)
     unknown_tables: list[str] = Field(default_factory=list)
+
+    @property
+    def unfixable(self) -> list[UnknownName]:
+        """Ненайденные имена, для которых замен не нашлось."""
+
+        return [item for item in self.unknown if not item.is_fixable]
+
+    @property
+    def is_fixable(self) -> bool:
+        """Можно ли исправить запрос: замены есть у всех ненайденных имён.
+
+        Пустой список ненайденных имён исправлять нечего, поэтому он не
+        считается исправимым случаем.
+        """
+
+        return bool(self.unknown) and not self.unfixable
 
 
 class TimingStats(BaseModel):

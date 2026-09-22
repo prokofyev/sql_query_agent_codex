@@ -77,6 +77,40 @@ def test_record_serializes_to_json() -> None:
     assert RUNS_TABLE == "runs"
 
 
+def test_record_from_unfixable_report_keeps_names_and_no_error() -> None:
+    """Прогон без замен пишется как завершённый, с ненайденными именами."""
+
+    unknown = [
+        {
+            "kind": "table",
+            "table": "prodcts",
+            "name": "prodcts",
+            "candidates": [],
+        }
+    ]
+    report = build_report(
+        "t4",
+        {
+            "original_sql": "select * from prodcts",
+            "current_sql": "select * from prodcts",
+            "schema_checked": True,
+            "schema_result": {"unknown": unknown},
+            "unfixable_message": "таблица «prodcts» не найдена",
+            "status": "unknown_unfixable",
+        },
+        [],
+    )
+
+    entry = record_from_report(report)
+
+    assert entry.status == "unknown_unfixable"
+    assert entry.unknown == unknown
+    assert entry.error is None
+    assert entry.step is None
+    assert entry.fix_ddl is None
+    assert entry.index_ddl is None
+
+
 async def test_memory_journal_keeps_records() -> None:
     """Журнал в памяти хранит записи и отдаёт их в обратном порядке."""
 

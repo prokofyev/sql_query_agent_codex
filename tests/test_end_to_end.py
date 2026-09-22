@@ -27,6 +27,8 @@ from tests.fakes import FakeApply, FakeModel
 TYPO_SQL = "select * from sku where product_colr_id = 1"
 FIXED_SQL = "select * from sku where product_color_id = 1"
 GOOD_SQL = "select * from sku where product_id = 1"
+MISSING_TABLE = "zzz_table"
+UNFIXABLE_SQL = f"select * from {MISSING_TABLE}"
 
 
 def _typo_world(**kwargs: Any) -> FakeWorld:
@@ -97,6 +99,48 @@ async def test_clean_cycle_counts_metrics() -> None:
     body = (await client.get("/metrics")).text
     assert 'sqa_runs_total{status="compared"} 1.0' in body
     assert "sqa_indexes_applied_total 1.0" in body
+
+
+async def test_unfixable_name_ends_session_and_writes_journal() -> None:
+    """Имя без похожих названий: сообщение, конец сессии, запись в журнал."""
+
+    world = FakeWorld(
+        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+    )
+    client, _ = build_test_client(world)
+
+    started = (await client.post("/runs", json={"sql": UNFIXABLE_SQL})).json()
+
+    assert started["status"] == "unknown_unfixable"
+    assert started["awaiting_decision"] is False
+    assert started["step"] is None
+    assert MISSING_TABLE in started["unfixable_message"]
+    assert started["fix"] is None
+    assert started["index"] is None
+    assert world.measure.calls == 0
+    assert world.model.fix_calls == 0
+    assert world.model.index_calls == 0
+
+    entries = await world.journal.history()
+    assert len(entries) == 1
+    assert entries[0].status == "unknown_unfixable"
+    assert entries[0].error is None
+
+
+async def test_unfixable_name_is_counted_in_metrics() -> None:
+    """Прогон без замен попадает в счётчик завершённых прогонов."""
+
+    registry = CollectorRegistry()
+    world = FakeWorld(
+        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+    )
+    world.metrics = RunMetrics(registry)
+    client, _ = build_test_client(world)
+
+    await client.post("/runs", json={"sql": UNFIXABLE_SQL})
+
+    body = (await client.get("/metrics")).text
+    assert 'sqa_runs_total{status="unknown_unfixable"} 1.0' in body
 
 
 async def test_no_speedup_cycle_is_reported_as_result() -> None:

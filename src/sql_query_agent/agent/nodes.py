@@ -18,8 +18,12 @@ from langgraph.types import interrupt
 
 from sql_query_agent.agent.llm import AdvisorModel
 from sql_query_agent.agent.state import AgentState
+from sql_query_agent.domain import UnknownName
 from sql_query_agent.logging_setup import get_logger
 from sql_query_agent.tools.check_schema import SchemaChecker
+from sql_query_agent.tools.schema_check import can_fix_all, describe_unfixable
+
+UNFIXABLE_STATUS = "unknown_unfixable"
 
 logger = get_logger(__name__)
 
@@ -95,12 +99,47 @@ async def extract_and_check(
 
 
 def needs_fix(state: AgentState) -> str:
-    """Маршрут после проверки имён."""
+    """Маршрут после проверки имён.
+
+    Исправлять запрос можно только тогда, когда замены есть у всех
+    ненайденных имён: иначе модель заменила бы часть имён, а запрос всё
+    равно остался бы неисправимым.
+    """
 
     result = state.get("schema_result")
     if not state.get("schema_checked") or not result:
         return "measure"
-    return "prepare_fix" if result.get("unknown") else "measure"
+    unknown = list(result.get("unknown") or [])
+    if not unknown:
+        return "measure"
+    if can_fix_all(_unknown_names(unknown)):
+        return "prepare_fix"
+    return "report_unfixable"
+
+
+def _unknown_names(unknown: list[dict[str, Any]]) -> list[UnknownName]:
+    """Ненайденные имена из состояния в виде доменных моделей."""
+
+    return [UnknownName.model_validate(item) for item in unknown]
+
+
+def report_unfixable(state: AgentState) -> dict[str, Any]:
+    """Завершить обработку, сообщив о ненайденных именах без замен.
+
+    Модель исправления здесь не вызывается: подставлять имя наугад опаснее,
+    чем попросить пользователя поправить запрос. Замер тоже не выполняется —
+    запрос заведомо не исполним.
+    """
+
+    result = state.get("schema_result") or {}
+    unknown = list(result.get("unknown") or [])
+    message = describe_unfixable(_unknown_names(unknown))
+    logger.info("имена не найдены, замен нет", unknown=len(unknown))
+    return {
+        "fixed_sql": None,
+        "unfixable_message": message,
+        "status": UNFIXABLE_STATUS,
+    }
 
 
 async def prepare_fix(state: AgentState, *, model: AdvisorModel) -> dict[str, Any]:
@@ -111,9 +150,14 @@ async def prepare_fix(state: AgentState, *, model: AdvisorModel) -> dict[str, An
     """
 
     result = state.get("schema_result") or {}
-    fixed = await model.propose_fix(
-        state["current_sql"], list(result.get("unknown") or [])
-    )
+    unknown = list(result.get("unknown") or [])
+    if not can_fix_all(_unknown_names(unknown)):
+        # Страховка на случай прямого вызова узла: без кандидатов модель
+        # начала бы придумывать имена, которых в запросе не было.
+        logger.warning("исправление без кандидатов пропущено", unknown=len(unknown))
+        return report_unfixable(state)
+
+    fixed = await model.propose_fix(state["current_sql"], unknown)
     logger.info("модель предложила исправление", length=len(fixed))
     return {"fixed_sql": fixed}
 

@@ -9,6 +9,8 @@ START -> extract_and_check -> [needs_fix]
             |                    |                     |                 |
             |                    |                     | отказ -> END    +-- принято -> measure
             |                    +-- measure <-------- + (нет опечаток)
+            |                    |
+            |                    +-- report_unfixable -> END (замен нет)
             v
         measure -> [has_baseline] -> prepare_index -> confirm_index -> [index_decision]
                         |                        |                    |
@@ -33,6 +35,7 @@ logger = get_logger(__name__)
 EXTRACT_NODE = "extract_and_check"
 PREPARE_FIX_NODE = "prepare_fix"
 CONFIRM_FIX_NODE = "confirm_fix"
+REPORT_UNFIXABLE_NODE = "report_unfixable"
 MEASURE_NODE = "measure"
 PREPARE_INDEX_NODE = "prepare_index"
 CONFIRM_INDEX_NODE = "confirm_index"
@@ -57,6 +60,7 @@ def build_graph(
     )
     builder.add_node(PREPARE_FIX_NODE, partial(nodes.prepare_fix, model=model))
     builder.add_node(CONFIRM_FIX_NODE, nodes.confirm_fix)
+    builder.add_node(REPORT_UNFIXABLE_NODE, nodes.report_unfixable)
     builder.add_node(MEASURE_NODE, partial(nodes.measure, measure_tool=measure_tool))
     builder.add_node(PREPARE_INDEX_NODE, partial(nodes.prepare_index, model=model))
     builder.add_node(CONFIRM_INDEX_NODE, nodes.confirm_index)
@@ -68,10 +72,12 @@ def build_graph(
         nodes.needs_fix,
         {
             "prepare_fix": PREPARE_FIX_NODE,
+            "report_unfixable": REPORT_UNFIXABLE_NODE,
             "measure": MEASURE_NODE,
         },
     )
     builder.add_edge(PREPARE_FIX_NODE, CONFIRM_FIX_NODE)
+    builder.add_edge(REPORT_UNFIXABLE_NODE, END)
     builder.add_conditional_edges(
         CONFIRM_FIX_NODE,
         nodes.fix_decision,

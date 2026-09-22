@@ -23,6 +23,7 @@ class AgentState(TypedDict, total=False):
     fixed_sql: str | None
     fix_applied: bool
     fix_declined: bool
+    unfixable_message: str | None
 
     proposal: dict[str, Any] | None
     index_declined: bool

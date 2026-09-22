@@ -11,6 +11,8 @@ from sql_query_agent.tools.check_schema import SchemaChecker
 
 pytestmark = pytest.mark.integration
 
+MISSING_TABLE = "zzz_missing_table"
+
 
 @pytest.fixture
 async def pool(require_postgres: None) -> AsyncIterator[AsyncConnectionPool]:
@@ -77,3 +79,39 @@ async def test_catalog_is_cached_between_calls(checker: SchemaChecker) -> None:
     second = await checker.catalog()
 
     assert first is second
+
+
+async def test_unfixable_name_ends_session_on_real_catalog(checker: SchemaChecker) -> None:
+    """Имя без похожих названий завершает прогон до модели исправления и замера.
+
+    Проверяется на реальном каталоге: имя таблицы не существует и не имеет
+    кандидатов выше порога, поэтому исправлять нечем.
+    """
+
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from sql_query_agent.agent.graph import build_graph
+    from sql_query_agent.run.report import RunStatus, build_report
+    from tests.fakes import FakeApply, FakeMeasure, FakeModel
+
+    model = FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}])
+    measure = FakeMeasure()
+    graph = build_graph(
+        model=model,
+        checker=checker,
+        measure_tool=measure,
+        apply_tool=FakeApply(),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "unfixable-real-catalog"}}
+
+    sql = f"select * from {MISSING_TABLE}"
+    await graph.ainvoke({"original_sql": sql, "current_sql": sql}, config)
+
+    snapshot = await graph.aget_state(config)
+    report = build_report("unfixable-real-catalog", dict(snapshot.values), [])
+
+    assert report.status is RunStatus.UNKNOWN_UNFIXABLE
+    assert model.fix_calls == 0
+    assert measure.calls == 0
+    assert MISSING_TABLE in report.unfixable_message

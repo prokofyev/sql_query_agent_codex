@@ -106,6 +106,7 @@ class RunReportSchema(BaseModel):
     schema_checked: bool = False
     unknown: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    unfixable_message: str = ""
     fix: FixSchema | None = None
     index: IndexSchema | None = None
     comparison: ComparisonSchema | None = None
@@ -127,6 +128,7 @@ class RunReportSchema(BaseModel):
             schema_checked=report.schema_checked,
             unknown=list(report.unknown),
             warnings=list(report.warnings),
+            unfixable_message=report.unfixable_message,
             fix=(
                 FixSchema(
                     original_sql=report.fix.original_sql,
