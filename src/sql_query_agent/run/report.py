@@ -20,6 +20,10 @@ DECISION_ACCEPTED = "accepted"
 DECISION_DECLINED = "declined"
 INDEX_NOT_OFFERED = "not_offered"
 
+IDENTIFIER_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
+
 
 class RunStatus(StrEnum):
     """Итоговое состояние прогона."""
@@ -143,14 +147,14 @@ def find_replacements(
     replacements: list[Replacement] = []
     for item in unknown:
         name = str(item.get("name") or "")
-        if not name or name in fixed_sql:
+        if not name or contains_identifier(fixed_sql, name):
             continue
         for candidate in item.get("candidates") or []:
             candidate_name = str(candidate.get("name") or "")
             if (
                 candidate_name
-                and candidate_name in fixed_sql
-                and candidate_name not in original_sql
+                and contains_identifier(fixed_sql, candidate_name)
+                and not contains_identifier(original_sql, candidate_name)
             ):
                 replacements.append(
                     Replacement(
@@ -162,6 +166,27 @@ def find_replacements(
                 )
                 break
     return replacements
+
+
+def contains_identifier(text: str, name: str) -> bool:
+    """Встречается ли имя в тексте отдельным идентификатором, а не подстрокой.
+
+    Соседние символы не должны быть символами идентификатора: иначе `sku`
+    внутри `sku2` считалось бы присутствием `sku`, а замена `sku2` на `sku`
+    не попала бы в список замен.
+    """
+
+    if not name:
+        return False
+    start = text.find(name)
+    while start != -1:
+        end = start + len(name)
+        before = text[start - 1] if start > 0 else ""
+        after = text[end] if end < len(text) else ""
+        if before not in IDENTIFIER_CHARS and after not in IDENTIFIER_CHARS:
+            return True
+        start = text.find(name, start + 1)
+    return False
 
 
 def _decisions(values: dict[str, Any]) -> dict[str, str]:

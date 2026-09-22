@@ -29,6 +29,8 @@ FIXED_SQL = "select * from sku where product_color_id = 1"
 GOOD_SQL = "select * from sku where product_id = 1"
 MISSING_TABLE = "zzz_table"
 UNFIXABLE_SQL = f"select * from {MISSING_TABLE}"
+BOTH_TYPOS_SQL = "select * from sku2 where product_id2 = 42"
+BOTH_FIXED_SQL = "select * from sku where product_id = 42"
 
 
 def _typo_world(**kwargs: Any) -> FakeWorld:
@@ -141,6 +143,45 @@ async def test_unfixable_name_is_counted_in_metrics() -> None:
 
     body = (await client.get("/metrics")).text
     assert 'sqa_runs_total{status="unknown_unfixable"} 1.0' in body
+
+
+async def test_table_and_column_typos_are_both_fixed() -> None:
+    """Опечатка в таблице и колонке: исправляются оба имени, замена видна и замер идёт."""
+
+    world = FakeWorld(
+        model=FakeModel(
+            entities=[{"table": "sku2", "columns": ["product_id2"]}],
+            fixed_sql=BOTH_FIXED_SQL,
+        ),
+        apply=FakeApply(before_ms=100.0, after_ms=10.0),
+    )
+    client, _ = build_test_client(world)
+
+    started = (await client.post("/runs", json={"sql": BOTH_TYPOS_SQL})).json()
+
+    assert started["step"] == "schema_fix"
+    unknown = {(item["kind"], item["name"]) for item in started["unknown"]}
+    assert unknown == {("table", "sku2"), ("column", "product_id2")}
+    replacements = {
+        (item["old_name"], item["new_name"]) for item in started["fix"]["replacements"]
+    }
+    assert replacements == {("sku2", "sku"), ("product_id2", "product_id")}
+
+    accepted = (
+        await client.post(
+            f"/runs/{started['thread_id']}/decision", json={"accepted": True}
+        )
+    ).json()
+    assert accepted["step"] == "index_proposal"
+    assert world.measure.calls == 1
+
+    finished = (
+        await client.post(
+            f"/runs/{accepted['thread_id']}/decision", json={"accepted": True}
+        )
+    ).json()
+    assert finished["status"] == "compared"
+    assert finished["current_sql"] == BOTH_FIXED_SQL
 
 
 async def test_no_speedup_cycle_is_reported_as_result() -> None:

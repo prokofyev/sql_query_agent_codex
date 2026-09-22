@@ -1,7 +1,12 @@
 """Тесты отчёта о прогоне: статусы, решения, замены и сравнение."""
 
 from sql_query_agent.domain_comparison import ComparisonVerdict
-from sql_query_agent.run.report import RunStatus, build_report
+from sql_query_agent.run.report import (
+    RunStatus,
+    build_report,
+    contains_identifier,
+    find_replacements,
+)
 
 UNKNOWN = [
     {
@@ -82,6 +87,63 @@ def test_fixable_run_has_no_unfixable_message() -> None:
     report = build_report("t3", _values(fixed_sql=FIXED), [{"step": "schema_fix"}])
 
     assert report.unfixable_message == ""
+
+
+TYPOS_BOTH = [
+    {
+        "kind": "table",
+        "table": "sku2",
+        "name": "sku2",
+        "candidates": [{"name": "sku", "score": 85.7}],
+    },
+    {
+        "kind": "column",
+        "table": "sku2",
+        "name": "product_id2",
+        "candidates": [{"name": "product_id", "score": 95.2}],
+    },
+]
+BOTH_ORIGINAL = "select * from sku2 where product_id2 = 42"
+BOTH_FIXED = "select * from sku where product_id = 42"
+
+
+def test_identifier_match_ignores_substrings() -> None:
+    """Имя внутри более длинного имени не считается отдельным идентификатором."""
+
+    assert contains_identifier("select * from sku2", "sku") is False
+    assert contains_identifier("select * from skus", "sku") is False
+    assert contains_identifier("select * from sku where x = 1", "sku") is True
+    assert contains_identifier("product_id2", "product_id") is False
+    assert contains_identifier("product_id", "product_id") is True
+    assert contains_identifier("select sku, product_id from t", "sku") is True
+
+
+def test_substring_names_are_reported_as_replacements() -> None:
+    """Замена с подстрочным новым именем попадает в список замен."""
+
+    replacements = find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, BOTH_FIXED)
+
+    assert [(item.old_name, item.new_name) for item in replacements] == [
+        ("sku2", "sku"),
+        ("product_id2", "product_id"),
+    ]
+    assert [item.kind for item in replacements] == ["table", "column"]
+
+
+def test_unchanged_query_has_no_replacements() -> None:
+    """Совпадение исправленного и исходного запросов даёт пустой список замен."""
+
+    assert find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, BOTH_ORIGINAL) == []
+
+
+def test_partial_fix_reports_only_applied_replacement() -> None:
+    """Если модель заменила только таблицу, в списке замен только она."""
+
+    partially_fixed = "select * from sku where product_id2 = 42"
+
+    replacements = find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, partially_fixed)
+
+    assert [(item.old_name, item.new_name) for item in replacements] == [("sku2", "sku")]
 
 
 def _values(**overrides: object) -> dict[str, object]:

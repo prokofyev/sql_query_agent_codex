@@ -98,36 +98,45 @@ def check_entities(
         checked_tables += 1
         if catalog.has_table(entity.table):
             checked_columns += len(entity.columns)
-            for column in entity.columns:
-                if catalog.has_column(entity.table, column):
-                    continue
-                unknown.append(
-                    UnknownName(
-                        kind=UnknownNameKind.COLUMN,
-                        table=entity.table,
-                        name=column,
-                        candidates=suggest_names(
-                            column,
-                            catalog.column_names(entity.table),
-                            threshold=threshold,
-                            limit=suggestion_limit,
-                        ),
-                    )
+            unknown.extend(
+                _missing_columns(
+                    entity.table,
+                    entity.columns,
+                    catalog.column_names(entity.table),
+                    threshold=threshold,
+                    suggestion_limit=suggestion_limit,
                 )
+            )
             continue
 
         unknown_tables.append(entity.table)
+        table_candidates = suggest_names(
+            entity.table,
+            known_table_names,
+            threshold=threshold,
+            limit=suggestion_limit,
+        )
         unknown.append(
             UnknownName(
                 kind=UnknownNameKind.TABLE,
                 table=entity.table,
                 name=entity.table,
-                candidates=suggest_names(
-                    entity.table,
-                    known_table_names,
-                    threshold=threshold,
-                    limit=suggestion_limit,
-                ),
+                candidates=table_candidates,
+            )
+        )
+        if not table_candidates:
+            # Нет даже похожей таблицы — проверять колонки не по чему.
+            continue
+        # Колонки отсутствующей таблицы проверяются по колонкам таблиц-кандидатов:
+        # иначе опечатка в колонке останется незамеченной и запрос упадёт на замере.
+        checked_columns += len(entity.columns)
+        unknown.extend(
+            _missing_columns(
+                entity.table,
+                entity.columns,
+                _candidate_columns(catalog, table_candidates),
+                threshold=threshold,
+                suggestion_limit=suggestion_limit,
             )
         )
 
@@ -138,3 +147,46 @@ def check_entities(
         unknown=unknown,
         unknown_tables=unknown_tables,
     )
+
+
+def _candidate_columns(
+    catalog: SchemaCatalog,
+    table_candidates: list[NameCandidate],
+) -> list[str]:
+    """Колонки таблиц-кандидатов: пул для подбора замен отсутствующих колонок."""
+
+    columns: set[str] = set()
+    for candidate in table_candidates:
+        columns.update(catalog.column_names(candidate.name))
+    return sorted(columns)
+
+
+def _missing_columns(
+    table: str,
+    columns: list[str],
+    variants: list[str],
+    *,
+    threshold: float,
+    suggestion_limit: int,
+) -> list[UnknownName]:
+    """Отсутствующие колонки таблицы с кандидатами из заданного пула имён."""
+
+    known = set(variants)
+    missing: list[UnknownName] = []
+    for column in columns:
+        if column in known:
+            continue
+        missing.append(
+            UnknownName(
+                kind=UnknownNameKind.COLUMN,
+                table=table,
+                name=column,
+                candidates=suggest_names(
+                    column,
+                    variants,
+                    threshold=threshold,
+                    limit=suggestion_limit,
+                ),
+            )
+        )
+    return missing

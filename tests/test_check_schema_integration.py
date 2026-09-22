@@ -115,3 +115,59 @@ async def test_unfixable_name_ends_session_on_real_catalog(checker: SchemaChecke
     assert model.fix_calls == 0
     assert measure.calls == 0
     assert MISSING_TABLE in report.unfixable_message
+
+
+async def test_missing_table_and_column_are_both_checked(checker: SchemaChecker) -> None:
+    """Опечатка и в таблице, и в колонке даёт оба ненайденных имени на реальной схеме."""
+
+    result = await checker.run([{"table": "sku2", "columns": ["product_id2"]}])
+
+    assert result["ok"] is False
+    found = {(item["kind"], item["name"]) for item in result["unknown"]}
+    assert found == {("table", "sku2"), ("column", "product_id2")}
+    assert result["checked_columns"] == 1
+
+    column = next(item for item in result["unknown"] if item["kind"] == "column")
+    names = [candidate["name"] for candidate in column["candidates"]]
+    assert names[0] == "product_id"
+    sku_columns = {"sku_id", "product_id", "product_size_id", "product_color_id"}
+    assert set(names) <= sku_columns
+
+
+async def test_missing_table_column_typos_are_fixed_and_measured(checker: SchemaChecker) -> None:
+    """Оба имени исправляются, и прогон доходит до замера без ошибок имён."""
+
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from sql_query_agent.agent.graph import build_graph
+    from sql_query_agent.run.report import RunStatus, build_report
+    from tests.fakes import FakeApply, FakeMeasure, FakeModel
+
+    sql = "select * from sku2 where product_id2 = 42"
+    fixed = "select * from sku where product_id = 42"
+    model = FakeModel(
+        entities=[{"table": "sku2", "columns": ["product_id2"]}],
+        fixed_sql=fixed,
+    )
+    measure = FakeMeasure()
+    graph = build_graph(
+        model=model,
+        checker=checker,
+        measure_tool=measure,
+        apply_tool=FakeApply(),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "both-typos-real-catalog"}}
+
+    await graph.ainvoke({"original_sql": sql, "current_sql": sql}, config)
+    snapshot = await graph.aget_state(config)
+    report = build_report(
+        "both-typos-real-catalog",
+        dict(snapshot.values),
+        [dict(item.value) for item in (snapshot.interrupts or [])],
+    )
+
+    assert report.status is RunStatus.AWAITING_DECISION
+    assert model.fix_calls == 1
+    replacements = {(item.old_name, item.new_name) for item in report.fix.replacements}
+    assert replacements == {("sku2", "sku"), ("product_id2", "product_id")}

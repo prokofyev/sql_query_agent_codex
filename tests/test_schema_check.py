@@ -255,3 +255,89 @@ def test_no_candidates_with_high_threshold(catalog: SchemaCatalog) -> None:
     assert missed.name == "product_colr_id"
     assert missed.candidates == []
     assert result.is_fixable is False
+
+
+def test_missing_table_checks_its_columns(catalog: SchemaCatalog) -> None:
+    """Опечатка и в таблице, и в колонке даёт оба ненайденных имени."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="sku2", columns=["product_id2"])],
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+    found = {(item.kind, item.name) for item in result.unknown}
+    assert found == {
+        (UnknownNameKind.TABLE, "sku2"),
+        (UnknownNameKind.COLUMN, "product_id2"),
+    }
+    assert result.checked_columns == 1
+
+
+def test_missing_table_column_gets_candidates_from_candidates_table(
+    catalog: SchemaCatalog,
+) -> None:
+    """Кандидаты колонки отсутствующей таблицы берутся из колонок таблиц-кандидатов."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="sku2", columns=["product_id2"])],
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+    column = next(item for item in result.unknown if item.kind is UnknownNameKind.COLUMN)
+    assert column.table == "sku2"
+    names = [candidate.name for candidate in column.candidates]
+    assert names[0] == "product_id"
+    assert set(names) <= {"sku_id", "product_id", "product_size_id", "product_color_id"}
+    assert can_fix_all(result.unknown) is True
+
+
+def test_missing_table_column_present_in_candidates_is_not_reported(
+    catalog: SchemaCatalog,
+) -> None:
+    """Колонка, найденная среди колонок таблиц-кандидатов, ненайденной не считается."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="sku2", columns=["product_id"])],
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+    assert [item.kind for item in result.unknown] == [UnknownNameKind.TABLE]
+    assert result.unknown_tables == ["sku2"]
+
+
+def test_missing_table_without_candidates_skips_its_columns(catalog: SchemaCatalog) -> None:
+    """Без кандидатов у таблицы её колонки ненайденными не объявляются."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="zzz_unknown", columns=["qqq"])],
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+    assert [item.kind for item in result.unknown] == [UnknownNameKind.TABLE]
+    assert result.checked_columns == 0
+
+
+def test_missing_table_column_without_candidates_blocks_fixing(
+    catalog: SchemaCatalog,
+) -> None:
+    """Колонка отсутствующей таблицы без кандидатов делает запрос неисправимым."""
+
+    result = check_entities(
+        catalog,
+        [ColumnNames(table="sku2", columns=["qqq"])],
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+    column = next(item for item in result.unknown if item.kind is UnknownNameKind.COLUMN)
+    assert column.candidates == []
+    assert result.is_fixable is False
+    assert can_fix_all(result.unknown) is False

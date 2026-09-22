@@ -81,6 +81,53 @@ async def test_unfixable_name_ends_session_with_real_model(
         await pool.close()
 
 
+async def test_real_model_fixes_both_table_and_column(
+    require_postgres: None,
+    postgres_available: bool,
+) -> None:
+    """Настоящая модель исправляет и имя таблицы, и имя колонки.
+
+    Проверка имён обязана сообщить оба ненайденных имени: иначе модель
+    починит только то, о чём ей сказали, и запрос упадёт на замере.
+    """
+
+    from psycopg_pool import AsyncConnectionPool
+
+    from sql_query_agent.db.pool import create_pool, open_pool
+    from sql_query_agent.tools.check_schema import SchemaChecker
+
+    settings = Settings()
+    sql = "select * from sku2 where product_id2 = 42"
+    pool: AsyncConnectionPool = create_pool(settings.database.dsn)
+    await open_pool(pool)
+    try:
+        checker = SchemaChecker(
+            pool,
+            schema=settings.database.schema_name,
+            threshold=settings.validation.fuzzy_threshold,
+            suggestion_limit=settings.validation.suggestion_limit,
+        )
+        advisor = GigaChatAdvisor(settings.gigachat)
+
+        message = await advisor.extract_identifiers(sql, [checker.as_tool()])
+        tool_calls = [
+            call
+            for call in (getattr(message, "tool_calls", None) or [])
+            if call.get("name") == "check_schema"
+        ]
+        assert tool_calls, "модель не вызвала инструмент проверки имён"
+
+        result = await checker.run(list(tool_calls[0]["args"].get("entities") or []))
+        found = {(item["kind"], item["name"]) for item in result["unknown"]}
+        assert found == {("table", "sku2"), ("column", "product_id2")}
+
+        fixed = await advisor.propose_fix(sql, list(result["unknown"]))
+        assert "from sku" in fixed and "sku2" not in fixed
+        assert "product_id = 42" in fixed and "product_id2" not in fixed
+    finally:
+        await pool.close()
+
+
 def test_credentials_are_configured() -> None:
     """Креденшелы GigaChat заданы в окружении."""
 
