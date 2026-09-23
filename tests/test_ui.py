@@ -9,7 +9,14 @@ from typing import Any
 
 from sql_query_agent.domain_comparison import ComparisonVerdict
 from sql_query_agent.run.report import RunStatus, build_report
-from sql_query_agent.ui.app import apply_preset, mount_ui, run_decision, run_submit
+from sql_query_agent.ui.app import (
+    apply_preset,
+    mount_ui,
+    prepare_decision,
+    run_decision,
+    run_submit,
+    show_decisions,
+)
 from sql_query_agent.ui.view import (
     MOUNT_PATH,
     PRESETS_CAPTION,
@@ -20,6 +27,7 @@ from sql_query_agent.ui.view import (
     RunView,
     build_preset_labels,
     build_run_view,
+    decision_input_text,
     error_view,
     form_enabled,
     pending_view,
@@ -118,6 +126,165 @@ def test_apply_preset_keeps_input_for_unknown_title() -> None:
     apply_preset(sql_input, PRESETS, "нет такого")
 
     assert sql_input.value == "select 1"
+
+
+def _fix_view(sql: str = TYPO_SQL, fixed_sql: str = FIXED_SQL) -> RunView:
+    """Модель экрана с предложением об исправлении."""
+
+    return build_run_view(
+        build_report(
+            "t1",
+            {
+                "original_sql": sql,
+                "current_sql": sql,
+                "schema_checked": True,
+                "schema_result": {
+                    "unknown": [
+                        {
+                            "kind": "column",
+                            "table": "sku",
+                            "name": "product_colr_id",
+                            "candidates": [{"name": "product_color_id", "score": 96.0}],
+                        }
+                    ]
+                },
+                "fixed_sql": fixed_sql,
+            },
+            [{"step": "schema_fix"}],
+        )
+    )
+
+
+def _index_view() -> RunView:
+    """Модель экрана с предложением об индексе."""
+
+    return build_run_view(
+        build_report(
+            "t1",
+            {
+                "original_sql": GOOD_SQL,
+                "current_sql": GOOD_SQL,
+                "schema_checked": True,
+                "schema_result": {"unknown": []},
+                "before_stats": {"median_ms": 5.0, "minimum_ms": 4.0, "maximum_ms": 6.0, "runs": 3},
+                "proposal": {"ddl": "CREATE INDEX i ON sku (product_id)", "reason": "по фильтру"},
+            },
+            [{"step": "index_proposal"}],
+        )
+    )
+
+
+def test_decision_input_text_accepts_fix() -> None:
+    """Принятое исправление переносится в поле ввода."""
+
+    text = decision_input_text(_fix_view(), TYPO_SQL, accepted=True)
+
+    assert text == FIXED_SQL
+
+
+def test_decision_input_text_keeps_previous_on_decline() -> None:
+    """Отказ от исправления не трогает текст в поле."""
+
+    text = decision_input_text(_fix_view(), TYPO_SQL, accepted=False)
+
+    assert text == TYPO_SQL
+
+
+def test_decision_input_text_keeps_previous_for_index() -> None:
+    """Решение по индексу не трогает текст в поле."""
+
+    assert decision_input_text(_index_view(), GOOD_SQL, accepted=True) == GOOD_SQL
+    assert decision_input_text(_index_view(), GOOD_SQL, accepted=False) == GOOD_SQL
+
+
+def test_decision_input_text_ignores_stale_fix_on_index_step() -> None:
+    """После принятия исправления остаток исправления не переписывает поле заново."""
+
+    report = build_report(
+        "t1",
+        {
+            "original_sql": TYPO_SQL,
+            "current_sql": FIXED_SQL,
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "column",
+                        "table": "sku",
+                        "name": "product_colr_id",
+                        "candidates": [{"name": "product_color_id", "score": 96.0}],
+                    }
+                ]
+            },
+            "fixed_sql": FIXED_SQL,
+            "fix_applied": True,
+            "before_stats": {"median_ms": 5.0, "minimum_ms": 4.0, "maximum_ms": 6.0, "runs": 3},
+            "proposal": {"ddl": "CREATE INDEX i ON sku (product_id)", "reason": "по фильтру"},
+        },
+        [{"step": "index_proposal"}],
+    )
+    view = build_run_view(report)
+
+    assert view.fixed_sql == FIXED_SQL
+    assert view.needs_fix_decision is False
+    assert decision_input_text(view, FIXED_SQL, accepted=True) == FIXED_SQL
+
+
+def test_prepare_decision_fills_input_and_hides_buttons() -> None:
+    """Принятие исправления подставляет текст и сразу прячет ряд решений."""
+
+    class _Input:
+        value = TYPO_SQL
+
+    class _Row:
+        visible = True
+
+    sql_input = _Input()
+    decision_row = _Row()
+
+    text = prepare_decision(
+        _fix_view(),
+        sql_input,
+        decision_row,
+        accepted=True,
+    )
+
+    assert text == FIXED_SQL
+    assert sql_input.value == FIXED_SQL
+    assert decision_row.visible is False
+
+
+def test_prepare_decision_on_decline_keeps_text_and_hides_buttons() -> None:
+    """Отказ оставляет текст прежним, но ряд решений всё равно скрыт."""
+
+    class _Input:
+        value = TYPO_SQL
+
+    class _Row:
+        visible = True
+
+    sql_input = _Input()
+    decision_row = _Row()
+
+    prepare_decision(_fix_view(), sql_input, decision_row, accepted=False)
+
+    assert sql_input.value == TYPO_SQL
+    assert decision_row.visible is False
+
+
+def test_show_decisions_follows_view_state() -> None:
+    """Видимость ряда решений задаётся моделью экрана."""
+
+    class _Row:
+        visible = False
+
+    decision_row = _Row()
+
+    show_decisions(decision_row, _index_view())
+    assert decision_row.visible is True
+
+    show_decisions(decision_row, RunView())
+    assert decision_row.visible is False
 
 
 def test_fix_proposal_view_shows_replacements() -> None:
@@ -453,6 +620,44 @@ async def test_submit_shows_status_then_proposal() -> None:
     assert recorder.busy_states == [True, False]
     assert view.needs_fix_decision is True
     assert view.fixed_sql == FIXED_SQL
+
+
+async def test_accepted_fix_becomes_the_measured_request() -> None:
+    """Принятый исправленный запрос — тот, что система обрабатывает дальше."""
+
+    world = FakeWorld(model=FakeModel(fixed_sql=FIXED_SQL))
+    recorder = _RecordingView()
+    client = _client(world)
+
+    started = await run_submit(
+        TYPO_SQL, client, set_busy=recorder.set_busy, show=recorder.show
+    )
+    text = decision_input_text(started, TYPO_SQL, accepted=True)
+    accepted = await run_decision(
+        started.thread_id,
+        client,
+        accepted=True,
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    assert text == FIXED_SQL
+    assert accepted.sql == FIXED_SQL
+    assert accepted.needs_index_decision is True
+
+
+async def test_declined_fix_keeps_input_text() -> None:
+    """Отказ от исправления не подменяет текст в поле."""
+
+    world = FakeWorld(model=FakeModel(fixed_sql=FIXED_SQL))
+    recorder = _RecordingView()
+    client = _client(world)
+
+    started = await run_submit(
+        TYPO_SQL, client, set_busy=recorder.set_busy, show=recorder.show
+    )
+
+    assert decision_input_text(started, TYPO_SQL, accepted=False) == TYPO_SQL
 
 
 async def test_declining_fix_returns_input_availability() -> None:

@@ -224,6 +224,25 @@ def form_enabled(sql: str, *, busy: bool) -> tuple[bool, bool]:
     return True, bool(sql.strip())
 
 
+def decision_input_text(
+    view: RunView,
+    current: str,
+    *,
+    accepted: bool,
+) -> str:
+    """Текст, который должен оказаться в поле ввода после решения.
+
+    Принятое исправление переносится в поле: дальше система обрабатывает
+    именно этот запрос, и пользователь должен видеть его целиком. Отказ и
+    решения по индексу поле не меняют — пользователю может понадобиться
+    поправить прежний текст вручную.
+    """
+
+    if accepted and view.needs_fix_decision and view.fixed_sql:
+        return view.fixed_sql
+    return current
+
+
 def build_preset_labels(presets: list[dict[str, Any]]) -> list[str]:
     """Подписи предустановленных запросов для выпадающего списка."""
 
@@ -261,6 +280,7 @@ __all__ = [
     "RunView",
     "build_preset_labels",
     "build_run_view",
+    "decision_input_text",
     "error_view",
     "form_enabled",
     "pending_view",

@@ -31,6 +31,7 @@ from sql_query_agent.ui.view import (
     UNFIXABLE_CAPTION,
     RunView,
     build_preset_labels,
+    decision_input_text,
     form_enabled,
     pending_view,
     preset_sql,
@@ -91,6 +92,34 @@ def apply_preset(sql_input: Any, presets: list[dict[str, Any]], title: str) -> s
     return sql
 
 
+def prepare_decision(
+    view: RunView,
+    sql_input: Any,
+    decision_row: Any,
+    *,
+    accepted: bool,
+) -> str:
+    """Подготовить экран к решению пользователя.
+
+    Принятое исправление переносится в поле ввода, а ряд решений скрывается
+    сразу, до обращения к серверу: иначе по уже решённому предложению можно
+    было бы нажать второй раз, пока идёт запрос.
+    """
+
+    current = sql_input.value or ""
+    text = decision_input_text(view, current, accepted=accepted)
+    if text != current:
+        sql_input.value = text
+    decision_row.visible = False
+    return text
+
+
+def show_decisions(decision_row: Any, view: RunView) -> None:
+    """Показать ряд решений, если модель экрана ждёт решения."""
+
+    decision_row.visible = view.awaiting_decision
+
+
 def register_pages(
     client: AdvisorApiClient,
     *,
@@ -105,7 +134,12 @@ def register_pages(
         """Страница ввода запроса и решений по предложениям агента."""
 
         ui.page_title(TITLE)
-        state: dict[str, Any] = {"busy": False, "thread_id": "", "presets": list(presets or [])}
+        state: dict[str, Any] = {
+            "busy": False,
+            "thread_id": "",
+            "view": RunView(),
+            "presets": list(presets or []),
+        }
 
         with ui.card().classes("w-full"):
             sql_input = ui.textarea(
@@ -156,6 +190,7 @@ def register_pages(
             """Показать модель экрана."""
 
             state["thread_id"] = view.thread_id or state["thread_id"]
+            state["view"] = view
             status_label.text = view.status_text
             warnings_label.text = "\n".join(view.warnings)
             message_label.text = "\n".join(view.errors)
@@ -169,7 +204,7 @@ def register_pages(
             reason_label.text = view.index_reason
             result_card.visible = bool(view.result_text)
             result_label.text = view.result_text
-            decision_row.visible = view.awaiting_decision
+            show_decisions(decision_row, view)
             accept.text = ACCEPT_LABEL
 
         def sync_form() -> None:
@@ -202,6 +237,12 @@ def register_pages(
 
             if not state["thread_id"]:
                 return
+            prepare_decision(
+                state["view"],
+                sql_input,
+                decision_row,
+                accepted=accepted,
+            )
             await run_decision(
                 state["thread_id"],
                 client,
@@ -248,7 +289,9 @@ def mount_ui(
 __all__ = [
     "apply_preset",
     "mount_ui",
+    "prepare_decision",
     "register_pages",
     "run_decision",
     "run_submit",
+    "show_decisions",
 ]
