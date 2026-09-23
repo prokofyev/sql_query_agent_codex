@@ -213,8 +213,10 @@ async def test_presets_endpoint_returns_library() -> None:
 
     assert response.status_code == 200
     presets = response.json()["presets"]
-    assert len(presets) >= 5
+    assert len(presets) >= 10
     assert all(preset["sql"] for preset in presets)
+    assert all(preset["title"] for preset in presets)
+    assert all("expected" not in preset for preset in presets)
 
 
 async def test_invalid_body_is_reported_in_envelope() -> None:

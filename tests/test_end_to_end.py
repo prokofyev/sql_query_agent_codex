@@ -18,7 +18,6 @@ from sql_query_agent.api.app import create_app
 from sql_query_agent.api.deps import AppDeps
 from sql_query_agent.config import Settings
 from sql_query_agent.observability.metrics import RunMetrics
-from sql_query_agent.presets import preset_by_id
 from sql_query_agent.run.service import RunService
 from sql_query_agent.run.session import SessionRunner
 from tests.api_fakes import FakeWorld, build_test_app, build_test_client
@@ -319,8 +318,6 @@ async def test_integration_speedup_cycle_over_real_database(
     прогона и запись в журнале.
     """
 
-    preset = preset_by_id("point-lookup")
-    assert preset is not None
     model = FakeModel(
         entities=[{"table": "sku", "columns": ["produc_id"]}],
         fixed_sql="select * from sku where product_id = 42",
@@ -349,19 +346,18 @@ async def test_integration_no_speedup_cycle_over_real_database(
 ) -> None:
     """Цикл без ускорения на реальной базе сообщает причину и не меняет базу.
 
-    Агрегат по трём таблицам: узкое место в соединении и группировке, а не в
-    поиске строк по ключу, поэтому индекс по внешнему ключу ничего не меняет.
-    Ожидаемый итог — отсутствие ускорения с пояснением.
+    Запрос вводится вручную и фильтрует по низкоселективной колонке: индекс по
+    ключу товара его не ускоряет. Случая «индекс не помогает» нет в библиотеке
+    пресетов, поэтому он приходит через свободный ввод. Ожидаемый итог —
+    отсутствие ускорения с пояснением.
     """
 
-    preset = preset_by_id("aggregate-all")
-    assert preset is not None
     model = FakeModel(
         entities=[{"table": "sku", "columns": ["product_id"]}],
         ddl="CREATE INDEX e2e_sku_product_id_idx ON sku (product_id)",
     )
 
-    run = await _run_integration_cycle(preset.sql, model)
+    run = await _run_integration_cycle("select * from sku where product_color_id = 1", model)
 
     assert run.finished["status"] == "compared"
     assert run.finished["comparison"]["applied"] is True

@@ -19,6 +19,7 @@ from sql_query_agent.presets import PRESET_QUERIES
 pytestmark = pytest.mark.integration
 
 DEMO_TABLES = ("brand", "product", "sku", "product_size", "product_color")
+PRESET_INDEX = "CREATE INDEX invariance_preset_idx ON sku (product_id)"
 
 
 @pytest.fixture
@@ -65,6 +66,9 @@ async def test_public_schema_is_unchanged_after_all_presets(
     Каждый запрос действительно исполняется с предложенным индексом внутри
     транзакции с откатом, поэтому проверка осмысленна: если откат сломан,
     индексы останутся и попадут в снимок.
+
+    Команда индекса берётся из константы теста: в описании пресета её больше
+    нет, потому что индекс на прогоне предлагает модель, а не данные пресета.
     """
 
     before_counts = await _row_counts(pool)
@@ -73,7 +77,7 @@ async def test_public_schema_is_unchanged_after_all_presets(
     measurer = QueryMeasurer(pool, warmup_runs=0, repeat_runs=1)
     applier = IndexApplier(pool, measurer)
     for preset in PRESET_QUERIES:
-        outcome = await applier.apply(preset.sql, preset.index_ddl)
+        outcome = await applier.apply(preset.sql, PRESET_INDEX)
         assert outcome.applied is True, preset.id
 
     assert await _row_counts(pool) == before_counts

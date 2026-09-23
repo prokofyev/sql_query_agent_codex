@@ -40,7 +40,7 @@ async def test_app_starts_on_real_database_with_ui(
         assert health.status_code == 200
         assert health.json()["status"] == "ok"
         assert presets.status_code == 200
-        assert len(presets.json()["presets"]) >= 5
+        assert len(presets.json()["presets"]) >= 10
     finally:
         await deps.aclose()
 

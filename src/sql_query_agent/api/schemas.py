@@ -14,7 +14,6 @@ class PresetSchema(BaseModel):
     id: str
     title: str
     sql: str
-    expected: str
     note: str = ""
 
     @classmethod
@@ -25,7 +24,6 @@ class PresetSchema(BaseModel):
             id=preset.id,
             title=preset.title,
             sql=preset.sql,
-            expected=preset.expected.value,
             note=preset.note,
         )
 

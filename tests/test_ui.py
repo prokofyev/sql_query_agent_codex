@@ -722,8 +722,9 @@ async def test_client_loads_presets() -> None:
 
     presets = await client.presets()
 
-    assert len(presets) >= 5
+    assert len(presets) >= 10
     assert build_preset_labels(presets)[0]
+    assert all("expected" not in preset for preset in presets)
 
 
 async def test_client_decodes_comparison_from_api() -> None:
