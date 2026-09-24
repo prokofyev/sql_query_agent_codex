@@ -44,10 +44,10 @@ class RunService:
         report = await self._runner.start(sql, thread_id=thread_id)
         return await self._finalize(report)
 
-    async def decide(self, thread_id: str, *, accepted: bool) -> RunReport:
+    async def decide(self, thread_id: str, *, accepted: bool, step: str) -> RunReport:
         """Передать решение пользователя и продолжить прогон."""
 
-        report = await self._runner.decide(thread_id, accepted=accepted)
+        report = await self._runner.decide(thread_id, accepted=accepted, step=step)
         return await self._finalize(report)
 
     async def report(self, thread_id: str) -> RunReport:
@@ -82,11 +82,14 @@ class RunService:
         if report.awaiting_decision:
             return report
 
+        if report.thread_id in self._recorded:
+            return report
+        self._recorded.add(report.thread_id)
+
         if self._metrics is not None:
             observe_run(report, self._metrics)
 
-        if self._journal is not None and report.thread_id not in self._recorded:
-            self._recorded.add(report.thread_id)
+        if self._journal is not None:
             await self._write(report)
         return report
 

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from sql_query_agent.api.deps import AppDeps
 from sql_query_agent.api.errors import (
     INVALID_SQL,
+    NOT_AWAITING_DECISION,
     NOT_FOUND,
     PRESETS_UNAVAILABLE,
     SCHEMA_UNAVAILABLE,
@@ -26,7 +27,10 @@ from sql_query_agent.db.explain import SqlNotAllowedError, prepare_statement
 from sql_query_agent.logging_setup import get_logger
 from sql_query_agent.presets import PresetsError, load_presets
 from sql_query_agent.run.report import RunReport
-from sql_query_agent.run.session import SessionNotFoundError
+from sql_query_agent.run.session import (
+    SessionNotAwaitingDecisionError,
+    SessionNotFoundError,
+)
 from sql_query_agent.schema_diagram import SchemaError, load_schema
 
 logger = get_logger(__name__)
@@ -113,12 +117,24 @@ async def decide(
     payload: DecisionRequest,
     deps: Deps,
 ) -> RunReportSchema:
-    """Принять решение пользователя и продолжить прогон."""
+    """Принять решение пользователя и продолжить прогон.
+
+    Решение принимается только у прогона, остановленного на том этапе,
+    который назвал клиент: иначе запоздалый ответ попал бы на следующий
+    вопрос и запустил действие, которого пользователь не видел.
+    """
 
     try:
-        report = await deps.service.decide(thread_id, accepted=payload.accepted)
+        report = await deps.service.decide(
+            thread_id,
+            accepted=payload.accepted,
+            step=payload.step,
+        )
     except SessionNotFoundError as error:
         raise ApiError(NOT_FOUND, str(error), status_code=404) from error
+    except SessionNotAwaitingDecisionError as error:
+        logger.warning("решение отклонено", thread_id=thread_id, error=str(error))
+        raise ApiError(NOT_AWAITING_DECISION, str(error), status_code=409) from error
     return RunReportSchema.from_domain(report)
 
 

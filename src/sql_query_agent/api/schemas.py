@@ -64,6 +64,7 @@ class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     accepted: bool
+    step: str
 
 
 class ComparisonSchema(BaseModel):

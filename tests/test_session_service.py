@@ -1,5 +1,6 @@
 """Тесты службы прогонов: сессии, решения, метрики и журнал."""
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -11,7 +12,11 @@ from sql_query_agent.db.catalog import SchemaCatalog
 from sql_query_agent.observability.metrics import RunMetrics
 from sql_query_agent.run.journal import RunJournal
 from sql_query_agent.run.service import RunService
-from sql_query_agent.run.session import SessionNotFoundError, SessionRunner
+from sql_query_agent.run.session import (
+    SessionNotAwaitingDecisionError,
+    SessionNotFoundError,
+    SessionRunner,
+)
 from tests.fakes import FakeApply, FakeChecker, FakeMeasure, FakeModel
 
 CATALOG = SchemaCatalog.from_rows(
@@ -78,6 +83,14 @@ def _service(
     return RunService(SessionRunner(graph), journal=journal, metrics=metrics)
 
 
+async def _decide(service: RunService, report: Any, *, accepted: bool) -> Any:
+    """Решение по этапу, на котором прогон остановлен."""
+
+    return await service.decide(
+        report.thread_id, accepted=accepted, step=report.step or ""
+    )
+
+
 async def test_start_stops_at_fix_decision() -> None:
     """Запуск с опечаткой останавливается на решении по исправлению."""
 
@@ -96,7 +109,7 @@ async def test_accepting_fix_continues_to_index_decision() -> None:
     service = _service(model=_typo_model())
     started = await service.start(TYPO_SQL)
 
-    report = await service.decide(started.thread_id, accepted=True)
+    report = await _decide(service, started, accepted=True)
 
     assert report.awaiting_decision is True
     assert report.step == "index_proposal"
@@ -112,7 +125,7 @@ async def test_declining_fix_ends_run() -> None:
     service = _service(model=_typo_model())
     started = await service.start(TYPO_SQL)
 
-    report = await service.decide(started.thread_id, accepted=False)
+    report = await _decide(service, started, accepted=False)
 
     assert report.awaiting_decision is False
     assert report.status.value == "fix_declined"
@@ -123,7 +136,7 @@ async def test_full_cycle_ends_with_comparison() -> None:
 
     service = _service(apply=FakeApply(before_ms=100.0, after_ms=10.0))
     started = await service.start(GOOD_SQL)
-    report = await service.decide(started.thread_id, accepted=True)
+    report = await _decide(service, started, accepted=True)
 
     assert report.status.value == "compared"
     assert report.comparison is not None
@@ -134,7 +147,64 @@ async def test_unknown_session_is_reported() -> None:
     """Решение по неизвестной сессии отклоняется."""
 
     with pytest.raises(SessionNotFoundError):
-        await _service().decide("no-such-session", accepted=True)
+        await _service().decide("no-such-session", accepted=True, step="schema_fix")
+
+
+async def test_decide_on_completed_run_is_rejected() -> None:
+    """Решение по завершённому прогону не проходит и состояние не меняет."""
+
+    journal = RunJournal()
+    service = _service(
+        apply=FakeApply(before_ms=100.0, after_ms=10.0), journal=journal
+    )
+    started = await service.start(GOOD_SQL)
+    finished = await _decide(service, started, accepted=True)
+
+    with pytest.raises(SessionNotAwaitingDecisionError):
+        await service.decide(
+            finished.thread_id, accepted=False, step=started.step or ""
+        )
+
+    assert await service.report(finished.thread_id) == finished
+    assert len(await journal.history()) == 1
+
+
+async def test_decide_on_other_step_is_rejected() -> None:
+    """Решение по чужому этапу не попадает на следующий вопрос."""
+
+    service = _service(
+        model=_typo_model(), apply=FakeApply(before_ms=100.0, after_ms=10.0)
+    )
+    started = await service.start(TYPO_SQL)
+    stopped = await _decide(service, started, accepted=True)
+
+    assert stopped.step == "index_proposal"
+    with pytest.raises(SessionNotAwaitingDecisionError):
+        await service.decide(stopped.thread_id, accepted=True, step="schema_fix")
+    assert (await service.report(stopped.thread_id)).step == "index_proposal"
+
+
+async def test_concurrent_decisions_continue_run_once() -> None:
+    """Два одновременных решения продолжают прогон один раз."""
+
+    apply = FakeApply(before_ms=100.0, after_ms=10.0)
+    service = _service(apply=apply)
+    started = await service.start(GOOD_SQL)
+    step = started.step or ""
+
+    results = await asyncio.gather(
+        service.decide(started.thread_id, accepted=True, step=step),
+        service.decide(started.thread_id, accepted=True, step=step),
+        return_exceptions=True,
+    )
+
+    accepted = [item for item in results if not isinstance(item, Exception)]
+    rejected = [item for item in results if isinstance(item, Exception)]
+
+    assert len(accepted) == 1
+    assert len(rejected) == 1
+    assert isinstance(rejected[0], SessionNotAwaitingDecisionError)
+    assert apply.calls == 1
 
 
 async def test_completed_run_is_recorded_in_journal_once() -> None:
@@ -143,7 +213,7 @@ async def test_completed_run_is_recorded_in_journal_once() -> None:
     journal = RunJournal()
     service = _service(journal=journal)
     started = await service.start(GOOD_SQL)
-    first = await service.decide(started.thread_id, accepted=True)
+    first = await _decide(service, started, accepted=True)
 
     records = await journal.history()
 
@@ -170,7 +240,7 @@ async def test_declined_run_records_stage() -> None:
     journal = RunJournal()
     service = _service(model=_typo_model(), journal=journal)
     started = await service.start(TYPO_SQL)
-    await service.decide(started.thread_id, accepted=False)
+    await _decide(service, started, accepted=False)
 
     entries = await journal.history()
 
@@ -185,7 +255,7 @@ async def test_declined_index_records_stage() -> None:
     journal = RunJournal()
     service = _service(journal=journal)
     started = await service.start(GOOD_SQL)
-    await service.decide(started.thread_id, accepted=False)
+    await _decide(service, started, accepted=False)
 
     entries = await journal.history()
 
@@ -200,7 +270,7 @@ async def test_journal_failure_does_not_break_run() -> None:
     service = _service(journal=journal)
     started = await service.start(GOOD_SQL)
 
-    report = await service.decide(started.thread_id, accepted=True)
+    report = await _decide(service, started, accepted=True)
 
     assert report.status.value == "compared"
     assert report.comparison is not None
@@ -213,7 +283,7 @@ async def test_metrics_reflect_completed_run() -> None:
     metrics = RunMetrics(registry)
     service = _service(metrics=metrics, apply=FakeApply(before_ms=100.0, after_ms=10.0))
     started = await service.start(GOOD_SQL)
-    await service.decide(started.thread_id, accepted=True)
+    await _decide(service, started, accepted=True)
 
     rendered = generate_latest(registry).decode()
     assert 'sqa_runs_total{status="compared"} 1.0' in rendered
@@ -228,7 +298,7 @@ async def test_no_speedup_metric_is_counted() -> None:
     metrics = RunMetrics(registry)
     service = _service(metrics=metrics, apply=FakeApply(before_ms=15.0, after_ms=14.9))
     started = await service.start(GOOD_SQL)
-    await service.decide(started.thread_id, accepted=True)
+    await _decide(service, started, accepted=True)
 
     rendered = generate_latest(registry).decode()
     assert "sqa_no_speedup_total 1.0" in rendered
@@ -251,9 +321,9 @@ async def test_history_returns_latest_first() -> None:
 
     service = _service()
     first = await service.start(GOOD_SQL)
-    await service.decide(first.thread_id, accepted=False)
+    await _decide(service, first, accepted=False)
     second = await service.start(GOOD_SQL)
-    await service.decide(second.thread_id, accepted=False)
+    await _decide(service, second, accepted=False)
 
     reports = await service.history()
 

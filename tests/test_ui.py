@@ -673,6 +673,7 @@ async def test_accepted_fix_becomes_the_measured_request() -> None:
         started.thread_id,
         client,
         accepted=True,
+        step=started.step or "",
         set_busy=recorder.set_busy,
         show=recorder.show,
     )
@@ -710,6 +711,7 @@ async def test_declining_fix_returns_input_availability() -> None:
         started.thread_id,
         client,
         accepted=False,
+        step=started.step or "",
         set_busy=recorder.set_busy,
         show=recorder.show,
     )
@@ -738,6 +740,69 @@ async def test_run_submit_unblocks_form_after_failure() -> None:
         )
 
     assert recorder.busy_states == [True, False]
+
+
+async def test_decision_request_carries_current_step() -> None:
+    """Решение уходит на сервер с тем этапом, который показан пользователю."""
+
+    class _RecordingClient:
+        """Клиент, запоминающий переданный этап решения."""
+
+        def __init__(self) -> None:
+            self.steps: list[str] = []
+
+        async def decide(
+            self, thread_id: str, *, accepted: bool, step: str
+        ) -> RunView:
+            """Запомнить этап и вернуть пустую модель."""
+
+            self.steps.append(step)
+            return RunView()
+
+    recorder = _RecordingView()
+    client = _RecordingClient()
+
+    await run_decision(
+        "t1",
+        client,  # type: ignore[arg-type]
+        accepted=True,
+        step="index_proposal",
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    assert client.steps == ["index_proposal"]
+
+
+async def test_stale_step_decision_is_reported_to_user() -> None:
+    """Запоздалое решение по закрытому этапу показывается как ошибка."""
+
+    world = FakeWorld(model=FakeModel(fixed_sql=FIXED_SQL))
+    recorder = _RecordingView()
+    client = _client(world)
+    started = await run_submit(
+        TYPO_SQL, client, set_busy=recorder.set_busy, show=recorder.show
+    )
+    proposed = await run_decision(
+        started.thread_id,
+        client,
+        accepted=True,
+        step=started.step or "",
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    stale = await run_decision(
+        proposed.thread_id,
+        client,
+        accepted=True,
+        step=started.step or "",
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    assert stale.has_errors is True
+    assert "не ждёт решения" in (stale.errors[0] if stale.errors else "")
 
 
 async def test_client_reports_invalid_input_as_error_view() -> None:
@@ -818,8 +883,9 @@ async def test_client_decodes_comparison_from_api() -> None:
     )
     client, _ = build_ui_client(world)
     started = await client.start(GOOD_SQL)
-    proposed = await client.decide(started.thread_id, accepted=True)
-    finished = await client.decide(proposed.thread_id, accepted=True)
+    finished = await client.decide(
+        started.thread_id, accepted=True, step=started.step or ""
+    )
 
     assert finished.status == RunStatus.COMPLETED.value
     assert finished.no_speedup is False

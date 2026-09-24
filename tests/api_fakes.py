@@ -94,10 +94,32 @@ def build_ui_client(world: FakeWorld | None = None) -> tuple[Any, FakeWorld]:
     return AdvisorApiClient(build_test_app(current)), current
 
 
+async def decide(
+    client: httpx.AsyncClient,
+    run: dict[str, Any],
+    *,
+    accepted: bool,
+    step: str | None = None,
+) -> Any:
+    """Отправить решение по этапу, на котором прогон остановлен.
+
+    Этап берётся из отчёта: так же поступает веб-интерфейс, отвечая на то
+    предложение, которое пользователь видел. Явный этап нужен там, где
+    проверяется запоздалое решение: клиент отвечает по тому предложению,
+    которое видел до этого.
+    """
+
+    return await client.post(
+        f"/runs/{run['thread_id']}/decision",
+        json={"accepted": accepted, "step": step or run["step"]},
+    )
+
+
 __all__ = [
     "CATALOG",
     "FakeWorld",
     "build_test_app",
     "build_test_client",
     "build_ui_client",
+    "decide",
 ]

@@ -4,8 +4,14 @@
 остановиться на решении пользователя (`interrupt`): тогда прогон ждёт ответа,
 а состояние остаётся в checkpoint-хранилище, поэтому перезапуск процесса его
 не теряет.
+
+Решение принимается только у прогона, который действительно стоит на точке
+остановки, и только по тому этапу, который видел пользователь. Иначе ответ,
+отправленный из второй вкладки, стал бы ответом на следующий вопрос: замер и
+создание индекса выполнились бы без ведома пользователя.
 """
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -27,12 +33,40 @@ class SessionNotFoundError(LookupError):
     """Сессия с таким `thread_id` неизвестна."""
 
 
+class SessionNotAwaitingDecisionError(RuntimeError):
+    """Прогон есть, но решения от пользователя он сейчас не ждёт."""
+
+
+def stop_step(interrupts: list[dict[str, Any]]) -> str | None:
+    """Этап, на котором прогон остановился и ждёт решения."""
+
+    if not interrupts:
+        return None
+    step = interrupts[0].get("step")
+    return str(step) if step else None
+
+
 class SessionRunner:
     """Запуск графа агента и продолжение его по решениям пользователя."""
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
         self._known_sessions: list[str] = []
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock(self, thread_id: str) -> asyncio.Lock:
+        """Блокировка решения по прогону.
+
+        Проверка «прогон ждёт решения» и продолжение обязаны быть одним
+        неделимым шагом: между ними в окно попадают одновременные запросы, и
+        тогда замер и применение индекса выполняются дважды.
+        """
+
+        lock = self._locks.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[thread_id] = lock
+        return lock
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, Any]:
@@ -73,14 +107,28 @@ class SessionRunner:
         logger.info("прогон запущен", thread_id=session_id)
         return await self.report(session_id)
 
-    async def decide(self, thread_id: str, *, accepted: bool) -> RunReport:
-        """Передать решение пользователя и продолжить прогон."""
+    async def decide(self, thread_id: str, *, accepted: bool, step: str) -> RunReport:
+        """Передать решение пользователя и продолжить прогон.
 
-        await self._read(thread_id)
-        await self._graph.ainvoke(
-            Command(resume={"accepted": accepted}),
-            self._config(thread_id),
-        )
+        Решение проходит, только если прогон остановлен и ждёт решения ровно
+        по тому этапу, который назвал клиент.
+        """
+
+        async with self._lock(thread_id):
+            _values, interrupts = await self._read(thread_id)
+            current = stop_step(interrupts)
+            if current is None:
+                raise SessionNotAwaitingDecisionError(
+                    f"прогон {thread_id} не ждёт решения"
+                )
+            if current != step:
+                raise SessionNotAwaitingDecisionError(
+                    f"прогон {thread_id} не ждёт решения по этапу «{step}»"
+                )
+            await self._graph.ainvoke(
+                Command(resume={"accepted": accepted}),
+                self._config(thread_id),
+            )
         logger.info("решение принято", thread_id=thread_id, accepted=accepted)
         return await self.report(thread_id)
 
@@ -99,4 +147,10 @@ class SessionRunner:
         return reports
 
 
-__all__ = ["SessionNotFoundError", "SessionRunner", "new_thread_id"]
+__all__ = [
+    "SessionNotFoundError",
+    "SessionNotAwaitingDecisionError",
+    "SessionRunner",
+    "new_thread_id",
+    "stop_step",
+]

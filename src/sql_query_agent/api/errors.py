@@ -11,6 +11,7 @@ logger = get_logger(__name__)
 INVALID_SQL = "invalid_sql"
 VALIDATION_ERROR = "validation_error"
 NOT_FOUND = "not_found"
+NOT_AWAITING_DECISION = "not_awaiting_decision"
 PRESETS_UNAVAILABLE = "presets_unavailable"
 SCHEMA_UNAVAILABLE = "schema_unavailable"
 
@@ -55,6 +56,7 @@ def install_error_handlers(application: FastAPI) -> None:
 
 __all__ = [
     "INVALID_SQL",
+    "NOT_AWAITING_DECISION",
     "NOT_FOUND",
     "PRESETS_UNAVAILABLE",
     "SCHEMA_UNAVAILABLE",

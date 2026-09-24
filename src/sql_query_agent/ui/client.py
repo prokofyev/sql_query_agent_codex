@@ -79,13 +79,18 @@ class AdvisorApiClient:
 
         return await self._request("POST", "/runs", payload={"sql": sql}, sql=sql)
 
-    async def decide(self, thread_id: str, *, accepted: bool) -> RunView:
-        """Передать решение пользователя."""
+    async def decide(self, thread_id: str, *, accepted: bool, step: str) -> RunView:
+        """Передать решение пользователя по конкретному этапу.
+
+        Этап нужен, чтобы запоздалый ответ не стал ответом на следующий
+        вопрос: сервер принимает решение только по тому этапу, на котором
+        прогон действительно остановлен.
+        """
 
         return await self._request(
             "POST",
             f"/runs/{thread_id}/decision",
-            payload={"accepted": accepted},
+            payload={"accepted": accepted, "step": step},
         )
 
     async def report(self, thread_id: str) -> RunView:

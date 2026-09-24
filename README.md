@@ -57,6 +57,13 @@ uv run sql-index-advisor --host 127.0.0.1 --port 8080
 - API: `POST /runs`, `POST /runs/{thread_id}/decision`, `GET /runs`, `GET /runs/{thread_id}`,
   `GET /presets`, `GET /schema`, `GET /metrics`, `GET /healthz`
 
+Решение передаётся вместе с этапом, на котором пользователь увидел предложение:
+`{"accepted": true, "step": "schema_fix"}`. Этапы — `schema_fix` и `index_proposal`.
+Решение принимается только у прогона, который ждёт ответа именно по этому этапу; повторная,
+запоздалая отправка и запрос без этапа не проходят: 409 с кодом `not_awaiting_decision` или
+422 для запроса без этапа. Так ответ из давно открытой вкладки не запускает действие, которого
+пользователь не видел.
+
 ## Тесты
 
 ```bash

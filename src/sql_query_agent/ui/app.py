@@ -91,6 +91,7 @@ async def run_decision(
     client: AdvisorApiClient,
     *,
     accepted: bool,
+    step: str,
     set_busy: Callable[[bool], None],
     show: Callable[[RunView], None],
 ) -> RunView:
@@ -98,7 +99,7 @@ async def run_decision(
 
     set_busy(True)
     try:
-        view = await client.decide(thread_id, accepted=accepted)
+        view = await client.decide(thread_id, accepted=accepted, step=step)
     finally:
         set_busy(False)
     show(view)
@@ -267,6 +268,9 @@ def register_pages(
 
             if not state["thread_id"]:
                 return
+            step = state["view"].step or ""
+            if not step:
+                return
             prepare_decision(
                 state["view"],
                 sql_input,
@@ -277,6 +281,7 @@ def register_pages(
                 state["thread_id"],
                 client,
                 accepted=accepted,
+                step=step,
                 set_busy=set_busy,
                 show=render,
             )

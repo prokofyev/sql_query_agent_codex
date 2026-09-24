@@ -4,13 +4,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import CollectorRegistry, generate_latest
 
 from sql_query_agent.api.errors import (
     INVALID_SQL,
     PRESETS_UNAVAILABLE,
     SCHEMA_UNAVAILABLE,
 )
-from tests.api_fakes import FakeWorld, build_test_client
+from sql_query_agent.observability.metrics import RunMetrics
+from tests.api_fakes import FakeWorld, build_test_client, decide
 from tests.fakes import FakeApply, FakeMeasure, FakeModel
 
 GOOD_SQL = "select * from sku where product_id = 1"
@@ -78,17 +80,14 @@ async def test_decision_continues_run() -> None:
         )
     )
     started = (await client.post("/runs", json={"sql": TYPO_SQL})).json()
-    thread_id = started["thread_id"]
 
-    accepted = await client.post(f"/runs/{thread_id}/decision", json={"accepted": True})
+    accepted = await decide(client, started, accepted=True)
     payload = accepted.json()
 
     assert payload["step"] == "index_proposal"
     assert payload["index"]["ddl"].startswith("CREATE INDEX")
 
-    finished = (
-        await client.post(f"/runs/{thread_id}/decision", json={"accepted": True})
-    ).json()
+    finished = (await decide(client, payload, accepted=True)).json()
 
     assert finished["status"] == "compared"
     assert finished["awaiting_decision"] is False
@@ -103,9 +102,7 @@ async def test_declining_fix_ends_run() -> None:
     started = (await client.post("/runs", json={"sql": TYPO_SQL})).json()
 
     payload = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": False}
-        )
+        await decide(client, started, accepted=False)
     ).json()
 
     assert payload["status"] == "fix_declined"
@@ -136,14 +133,113 @@ async def test_unknown_run_is_not_found() -> None:
 
 
 async def test_decision_for_unknown_run_is_not_found() -> None:
-    """Решение по неизвестному прогону даёт 404."""
+    """Решение по неизвестному прогону даёт 404, а не «не ждёт решения»."""
 
     client, _ = build_test_client()
 
-    response = await client.post("/runs/no-such-run/decision", json={"accepted": True})
+    response = await client.post(
+        "/runs/no-such-run/decision",
+        json={"accepted": True, "step": "schema_fix"},
+    )
 
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+async def test_decision_on_completed_run_is_conflict() -> None:
+    """Повторное решение по завершённому прогону даёт 409."""
+
+    client, _ = build_test_client(
+        FakeWorld(apply=FakeApply(before_ms=100.0, after_ms=10.0))
+    )
+    started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
+    finished = (await decide(client, started, accepted=True)).json()
+
+    response = await decide(
+        client, finished, accepted=True, step="index_proposal"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "not_awaiting_decision"
+    assert response.json()["message"]
+
+
+async def test_rejected_decision_keeps_report_unchanged() -> None:
+    """Отклонённое решение не меняет отчёт о прогоне."""
+
+    client, _ = build_test_client(
+        FakeWorld(apply=FakeApply(before_ms=100.0, after_ms=10.0))
+    )
+    started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
+    finished = (await decide(client, started, accepted=True)).json()
+
+    await decide(client, finished, accepted=False, step="index_proposal")
+    stored = (await client.get(f"/runs/{finished['thread_id']}")).json()
+
+    assert stored == finished
+
+
+async def test_stale_decision_for_closed_step_is_conflict() -> None:
+    """Запоздалое решение по закрытому этапу не создаёт индекс."""
+
+    client, world = build_test_client(
+        FakeWorld(
+            model=FakeModel(
+                entities=[{"table": "sku", "columns": ["product_colr_id"]}],
+                fixed_sql=FIXED_SQL,
+            ),
+            apply=FakeApply(before_ms=100.0, after_ms=10.0),
+        )
+    )
+    started = (await client.post("/runs", json={"sql": TYPO_SQL})).json()
+    assert started["step"] == "schema_fix"
+
+    proposed = (await decide(client, started, accepted=True)).json()
+    assert proposed["step"] == "index_proposal"
+    assert world.apply.calls == 0
+
+    stale = await client.post(
+        f"/runs/{started['thread_id']}/decision",
+        json={"accepted": True, "step": "schema_fix"},
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "not_awaiting_decision"
+    assert world.apply.calls == 0
+    assert (await client.get(f"/runs/{started['thread_id']}")).json() == proposed
+
+
+async def test_decision_without_step_is_rejected() -> None:
+    """Запрос решения без этапа отклоняется как неверный."""
+
+    client, _ = build_test_client(_typo_world())
+    started = (await client.post("/runs", json={"sql": TYPO_SQL})).json()
+
+    response = await client.post(
+        f"/runs/{started['thread_id']}/decision",
+        json={"accepted": True},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+async def test_metrics_count_completed_run_once() -> None:
+    """Повторное решение по завершённому прогону не удваивает метрики и замеры."""
+
+    registry = CollectorRegistry()
+    world = FakeWorld(apply=FakeApply(before_ms=100.0, after_ms=10.0))
+    world.metrics = RunMetrics(registry)
+    client, _ = build_test_client(world)
+    started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
+    finished = (await decide(client, started, accepted=True)).json()
+    counted = generate_latest(registry)
+
+    await decide(client, finished, accepted=True, step="index_proposal")
+
+    assert generate_latest(registry) == counted
+    assert registry.get_sample_value("sqa_runs_total", {"status": "compared"}) == 1.0
+    assert registry.get_sample_value("sqa_indexes_applied_total") == 1.0
 
 
 async def test_empty_input_is_rejected() -> None:
@@ -186,7 +282,7 @@ async def test_metrics_are_prometheus_text_without_sql_labels() -> None:
 
     client, _ = build_test_client(FakeWorld(apply=FakeApply(before_ms=100.0, after_ms=10.0)))
     started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
-    await client.post(f"/runs/{started['thread_id']}/decision", json={"accepted": True})
+    await decide(client, started, accepted=True)
 
     response = await client.get("/metrics")
 

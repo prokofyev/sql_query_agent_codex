@@ -20,7 +20,7 @@ from sql_query_agent.config import Settings
 from sql_query_agent.observability.metrics import RunMetrics
 from sql_query_agent.run.service import RunService
 from sql_query_agent.run.session import SessionRunner
-from tests.api_fakes import FakeWorld, build_test_app, build_test_client
+from tests.api_fakes import FakeWorld, build_test_app, build_test_client, decide
 from tests.fakes import FakeApply, FakeModel
 
 TYPO_SQL = "select * from sku where product_colr_id = 1"
@@ -59,20 +59,12 @@ async def test_full_typo_cycle_writes_journal() -> None:
     assert started["step"] == "schema_fix"
     assert started["fix"]["replacements"][0]["new_name"] == "product_color_id"
 
-    accepted = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-        )
-    ).json()
+    accepted = (await decide(client, started, accepted=True)).json()
     assert accepted["step"] == "index_proposal"
     assert accepted["index"]["ddl"].startswith("CREATE INDEX")
     assert accepted["comparison"] is None
 
-    finished = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-        )
-    ).json()
+    finished = (await decide(client, accepted, accepted=True)).json()
 
     assert finished["status"] == "compared"
     assert finished["current_sql"] == FIXED_SQL
@@ -95,7 +87,7 @@ async def test_clean_cycle_counts_metrics() -> None:
     client, _ = build_test_client(world)
 
     started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
-    await client.post(f"/runs/{started['thread_id']}/decision", json={"accepted": True})
+    await decide(client, started, accepted=True)
 
     body = (await client.get("/metrics")).text
     assert 'sqa_runs_total{status="compared"} 1.0' in body
@@ -166,19 +158,11 @@ async def test_table_and_column_typos_are_both_fixed() -> None:
     }
     assert replacements == {("sku2", "sku"), ("product_id2", "product_id")}
 
-    accepted = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-        )
-    ).json()
+    accepted = (await decide(client, started, accepted=True)).json()
     assert accepted["step"] == "index_proposal"
     assert world.measure.calls == 1
 
-    finished = (
-        await client.post(
-            f"/runs/{accepted['thread_id']}/decision", json={"accepted": True}
-        )
-    ).json()
+    finished = (await decide(client, accepted, accepted=True)).json()
     assert finished["status"] == "compared"
     assert finished["current_sql"] == BOTH_FIXED_SQL
 
@@ -190,11 +174,7 @@ async def test_no_speedup_cycle_is_reported_as_result() -> None:
     client, _ = build_test_client(world)
 
     started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
-    finished = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-        )
-    ).json()
+    finished = (await decide(client, started, accepted=True)).json()
 
     assert finished["status"] == "compared"
     assert finished["comparison"]["applied"] is True
@@ -212,11 +192,7 @@ async def test_declined_fix_stops_before_measuring() -> None:
     client, _ = build_test_client(world)
 
     started = (await client.post("/runs", json={"sql": TYPO_SQL})).json()
-    finished = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": False}
-        )
-    ).json()
+    finished = (await decide(client, started, accepted=False)).json()
 
     assert finished["status"] == "fix_declined"
     assert finished["comparison"] is None
@@ -235,11 +211,7 @@ async def test_declined_index_leaves_database_untouched() -> None:
     client, _ = build_test_client(world)
 
     started = (await client.post("/runs", json={"sql": GOOD_SQL})).json()
-    finished = (
-        await client.post(
-            f"/runs/{started['thread_id']}/decision", json={"accepted": False}
-        )
-    ).json()
+    finished = (await decide(client, started, accepted=False)).json()
 
     assert finished["status"] == "index_declined"
     assert world.apply.calls == 0
@@ -269,7 +241,7 @@ async def test_history_endpoint_tracks_runs() -> None:
     runs = (await client.get("/runs")).json()["runs"]
     assert [run["thread_id"] for run in runs] == [started["thread_id"]]
 
-    await client.post(f"/runs/{started['thread_id']}/decision", json={"accepted": False})
+    await decide(client, started, accepted=False)
     runs = (await client.get("/runs")).json()["runs"]
     assert runs[0]["status"] == "fix_declined"
 
@@ -406,14 +378,8 @@ async def _run_integration_cycle(sql: str, model: FakeModel) -> _IntegrationRun:
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             started = (await client.post("/runs", json={"sql": sql})).json()
-            await client.post(
-                f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-            )
-            finished = (
-                await client.post(
-                    f"/runs/{started['thread_id']}/decision", json={"accepted": True}
-                )
-            ).json()
+            proposed = (await decide(client, started, accepted=True)).json()
+            finished = (await decide(client, proposed, accepted=True)).json()
 
         history = await journal.history(50)
         entries = [item for item in history if item.thread_id == started["thread_id"]]
