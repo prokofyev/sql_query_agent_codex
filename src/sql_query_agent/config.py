@@ -11,6 +11,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DSN = "postgresql://prokofyev@localhost:5432/products"
+DEFAULT_PRESETS_PATH = "resources/presets.yaml"
 
 
 class DatabaseSettings(BaseSettings):
@@ -70,6 +71,19 @@ class ObservabilitySettings(BaseSettings):
     json_logs: bool = False
 
 
+class PresetsSettings(BaseSettings):
+    """Параметры библиотеки предустановленных запросов."""
+
+    model_config = SettingsConfigDict(env_prefix="SQA_PRESETS__")
+
+    path: str = DEFAULT_PRESETS_PATH
+    """Путь к YAML-файлу с библиотекой пресетов.
+
+    Отсутствующий или пустой файл даёт пустую библиотеку: агент должен
+    работать и на базе без демонстрационных пресетов.
+    """
+
+
 class Settings(BaseSettings):
     """Корневые настройки приложения."""
 
@@ -86,6 +100,7 @@ class Settings(BaseSettings):
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
     measurement: MeasurementSettings = Field(default_factory=MeasurementSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    presets: PresetsSettings = Field(default_factory=PresetsSettings)
 
 
 @lru_cache

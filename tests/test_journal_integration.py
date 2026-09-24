@@ -20,7 +20,7 @@ from sql_query_agent.run.journal import RunRecord
 
 pytestmark = pytest.mark.integration
 
-GOOD_SQL = "select * from sku where product_id = 42"
+GENERIC_SQL = "select 1"
 
 
 @pytest.fixture
@@ -56,13 +56,13 @@ def _record(thread_id: str, **overrides: Any) -> RunRecord:
         "thread_id": thread_id,
         "status": "compared",
         "step": None,
-        "original_sql": GOOD_SQL,
-        "current_sql": GOOD_SQL,
+        "original_sql": GENERIC_SQL,
+        "current_sql": GENERIC_SQL,
         "schema_checked": True,
         "unknown": [],
         "warnings": [],
         "fix_ddl": None,
-        "index_ddl": "CREATE INDEX demo_idx ON sku (product_id)",
+        "index_ddl": "CREATE INDEX demo_idx ON demo_table (demo_column)",
         "decisions": {"fix": "not_required", "index": "accepted"},
         "before_stats": {"median_ms": 8.4, "minimum_ms": 8.1, "maximum_ms": 8.6, "runs": 3},
         "after_stats": {"median_ms": 0.2, "minimum_ms": 0.1, "maximum_ms": 0.3, "runs": 3},
@@ -91,7 +91,7 @@ async def test_record_is_stored_with_all_fields(journal: PostgresRunJournal) -> 
 
     record = await _latest(journal, thread_id)
 
-    assert record.original_sql == GOOD_SQL
+    assert record.original_sql == GENERIC_SQL
     assert record.schema_checked is True
     assert record.index_ddl.startswith("CREATE INDEX")
     assert record.decisions["index"] == "accepted"

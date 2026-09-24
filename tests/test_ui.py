@@ -102,6 +102,14 @@ def test_preset_labels_and_sql_lookup() -> None:
     assert preset_sql(PRESETS, "нет такого") == ""
 
 
+def test_empty_library_keeps_input_usable() -> None:
+    """Пустая библиотека не мешает ручному вводу запроса."""
+
+    assert build_preset_labels([]) == []
+    assert preset_sql([], "Точечная выборка") == ""
+    assert form_enabled(GOOD_SQL, busy=False) == (True, True)
+
+
 def test_apply_preset_fills_input() -> None:
     """Выбор запроса из библиотеки подставляет текст в поле ввода."""
 
@@ -725,6 +733,24 @@ async def test_client_loads_presets() -> None:
     assert len(presets) >= 10
     assert build_preset_labels(presets)[0]
     assert all("expected" not in preset for preset in presets)
+
+
+async def test_client_with_empty_library_returns_no_presets(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Пустая библиотека приходит клиенту как пустой список, а не ошибка."""
+
+    path = tmp_path / "presets.yaml"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SQA_PRESETS__PATH", str(path))
+
+    client, _ = build_ui_client()
+
+    presets = await client.presets()
+
+    assert presets == []
+    assert build_preset_labels(presets) == []
+    assert form_enabled("", busy=False) == (True, False)
 
 
 async def test_client_decodes_comparison_from_api() -> None:

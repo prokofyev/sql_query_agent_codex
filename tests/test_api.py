@@ -1,8 +1,11 @@
 """Тесты API: запуск прогона, решения, валидация ввода, метрики и история."""
 
+from pathlib import Path
 from typing import Any
 
-from sql_query_agent.api.errors import INVALID_SQL
+import pytest
+
+from sql_query_agent.api.errors import INVALID_SQL, PRESETS_UNAVAILABLE
 from tests.api_fakes import FakeWorld, build_test_client
 from tests.fakes import FakeApply, FakeMeasure, FakeModel
 
@@ -205,7 +208,7 @@ async def test_history_endpoint_lists_runs() -> None:
 
 
 async def test_presets_endpoint_returns_library() -> None:
-    """Библиотека запросов доступна по API."""
+    """Библиотека запросов отдаётся из файла, заданного настройкой."""
 
     client, _ = build_test_client()
 
@@ -213,10 +216,68 @@ async def test_presets_endpoint_returns_library() -> None:
 
     assert response.status_code == 200
     presets = response.json()["presets"]
-    assert len(presets) >= 10
+    assert len(presets) == 12
     assert all(preset["sql"] for preset in presets)
     assert all(preset["title"] for preset in presets)
+    assert all(preset["note"] for preset in presets)
     assert all("expected" not in preset for preset in presets)
+
+
+async def test_presets_endpoint_reads_records_from_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Состав библиотеки определяется файлом, а не кодом."""
+
+    path = tmp_path / "presets.yaml"
+    path.write_text(
+        "- id: only\n  title: Единственный\n  sql: select 1\n  note: из файла\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQA_PRESETS__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/presets")
+
+    assert response.status_code == 200
+    assert response.json()["presets"] == [
+        {"id": "only", "title": "Единственный", "sql": "select 1", "note": "из файла"}
+    ]
+
+
+async def test_presets_endpoint_with_empty_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Пустой файл даёт пустую библиотеку и не ломает эндпоинт."""
+
+    path = tmp_path / "presets.yaml"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SQA_PRESETS__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/presets")
+
+    assert response.status_code == 200
+    assert response.json()["presets"] == []
+
+
+async def test_presets_endpoint_with_broken_record_reports_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Повреждённая запись даёт ошибку вместо повреждённого пресета."""
+
+    path = tmp_path / "presets.yaml"
+    path.write_text("- id: broken\n  title: Без SQL\n", encoding="utf-8")
+    monkeypatch.setenv("SQA_PRESETS__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/presets")
+
+    assert response.status_code == 500
+    assert response.json()["code"] == PRESETS_UNAVAILABLE
+    assert "sql" in response.json()["message"]
 
 
 async def test_invalid_body_is_reported_in_envelope() -> None:

@@ -1,0 +1,122 @@
+# Библиотека демонстрационных запросов.
+#
+# Состав привязан к форме демо-базы `products`: `brand` — 1 000 строк,
+# `product` — 20 000, `product_size` — 50 значений, `sku` — 100 000 строк с
+# колонкой `added_at`. На другой базе запросы остаются валидными, но индекс
+# может их не ускорять: для чужой схемы предназначен свободный ввод.
+#
+# Путь к файлу задаётся настройкой `SQA_PRESETS__PATH`. Отсутствующий или
+# пустой файл даёт пустую библиотеку, и это не ошибка.
+#
+# Поля: обязательные `id`, `title`, `sql`; необязательное `note`.
+
+- id: count-by-product
+  title: Сколько SKU у товара
+  sql: |
+    select count(*) from sku where product_id = 42
+  note: Точечный фильтр по внешнему ключу — индекс по `sku.product_id` заменяет чтение всей таблицы.
+
+- id: page-by-product
+  title: Страница SKU товара
+  sql: |
+    select sku_id, product_size_id, product_color_id
+    from sku
+    where product_id = 42
+    order by sku_id
+    limit 20
+  note: Выборка с сортировкой и ограничением — индекс отдаёт строки товара уже упорядоченными по ключу.
+
+- id: count-by-products
+  title: Сводка по нескольким товарам
+  sql: |
+    select product_id, count(*)
+    from sku
+    where product_id in (1, 2, 3, 4, 5, 6, 7, 8)
+    group by 1
+    order by 2 desc
+  note: Фильтр по списку значений — индекс обслуживает каждый товар по отдельности, без полного чтения.
+
+- id: join-product-name
+  title: Название товара по SKU
+  sql: |
+    select p.product_name, s.sku_id
+    from sku s
+    join product p on p.product_id = s.product_id
+    where s.product_id = 42
+  note: Соединение двух таблиц по ключу — планировщик переходит к вложенному циклу с выборкой по индексу.
+
+- id: join-brand-count
+  title: Бренд товара по SKU
+  sql: |
+    select b.brand_name, count(*)
+    from sku s
+    join product p on p.product_id = s.product_id
+    join brand b on b.brand_id = p.brand_id
+    where s.product_id = 42
+    group by 1
+  note: Цепочка из трёх таблиц — ускорение даёт отбор строк в самой большой таблице.
+
+- id: window-top-n-per-product
+  title: Первые SKU каждого товара
+  sql: |
+    select product_id, sku_id from (
+        select product_id, sku_id,
+               row_number() over (partition by product_id order by sku_id) as rn
+        from sku
+        where product_id in (1, 2, 3, 4)
+    ) t
+    where rn <= 5
+    order by product_id, sku_id
+  note: Топ-N на товар — индекс нужен и для нумерации, и для внешнего отбора строк.
+
+- id: filter-by-size
+  title: SKU одного размера
+  sql: |
+    select sku_id, product_id
+    from sku
+    where product_size_id = 7
+  note: Фильтр по размеру — индекс по `sku.product_size_id` отбирает около двух тысяч строк из ста тысяч.
+
+- id: size-breakdown
+  title: Раскладка по размерам через соединение
+  sql: |
+    select ps.product_size_name, count(*)
+    from sku s
+    join product_size ps on ps.product_size_id = s.product_size_id
+    where s.product_size_id = 7
+    group by 1
+  note: Соединение со справочником и агрегат — индекс сокращает вход до строк одного размера.
+
+- id: recent-skus
+  title: Недавно добавленные SKU
+  sql: |
+    select sku_id, product_id, added_at
+    from sku
+    where added_at >= now() - interval '7 days'
+    order by added_at desc
+    limit 20
+  note: Сравнение диапазона — индекс по `sku.added_at` отбирает узкое окно вместо чтения всех строк.
+
+- id: count-added-in-period
+  title: Число добавленных за период
+  sql: |
+    select count(*)
+    from sku
+    where added_at >= now() - interval '30 days'
+  note: Диапазонный счётчик — индекс по `sku.added_at` заменяет полное чтение таблицы.
+
+- id: brand-product-count
+  title: Сколько товаров у бренда
+  sql: |
+    select count(*) from product where brand_id = 7
+  note: Точечный фильтр по внешнему ключу — индекс по `product.brand_id` отбирает одну тысячную строк.
+
+- id: brand-products-page
+  title: Страница товаров бренда
+  sql: |
+    select product_id, product_name
+    from product
+    where brand_id = 7
+    order by product_id
+    limit 20
+  note: Сортированная страница по бренду — индекс по `product.brand_id` отдаёт строки одного бренда.

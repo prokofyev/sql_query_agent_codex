@@ -14,7 +14,7 @@ from sql_query_agent.config import Settings
 from sql_query_agent.db.explain import QueryMeasurer
 from sql_query_agent.db.index_apply import IndexApplier
 from sql_query_agent.db.pool import create_pool, open_pool
-from sql_query_agent.presets import PRESET_QUERIES
+from sql_query_agent.presets import load_presets
 
 pytestmark = pytest.mark.integration
 
@@ -76,7 +76,7 @@ async def test_public_schema_is_unchanged_after_all_presets(
 
     measurer = QueryMeasurer(pool, warmup_runs=0, repeat_runs=1)
     applier = IndexApplier(pool, measurer)
-    for preset in PRESET_QUERIES:
+    for preset in load_presets():
         outcome = await applier.apply(preset.sql, PRESET_INDEX)
         assert outcome.applied is True, preset.id
 

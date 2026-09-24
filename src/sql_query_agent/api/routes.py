@@ -5,7 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from sql_query_agent.api.deps import AppDeps
-from sql_query_agent.api.errors import INVALID_SQL, NOT_FOUND, ApiError
+from sql_query_agent.api.errors import (
+    INVALID_SQL,
+    NOT_FOUND,
+    PRESETS_UNAVAILABLE,
+    ApiError,
+)
 from sql_query_agent.api.schemas import (
     DecisionRequest,
     HealthResponse,
@@ -17,7 +22,7 @@ from sql_query_agent.api.schemas import (
 )
 from sql_query_agent.db.explain import SqlNotAllowedError, prepare_statement
 from sql_query_agent.logging_setup import get_logger
-from sql_query_agent.presets import PRESET_QUERIES
+from sql_query_agent.presets import PresetsError, load_presets
 from sql_query_agent.run.report import RunReport
 from sql_query_agent.run.session import SessionNotFoundError
 
@@ -53,8 +58,12 @@ def validate_sql(sql: str) -> str:
 async def presets() -> PresetsResponse:
     """Библиотека предустановленных запросов."""
 
+    try:
+        library = load_presets()
+    except PresetsError as error:
+        raise ApiError(PRESETS_UNAVAILABLE, str(error), status_code=500) from error
     return PresetsResponse(
-        presets=[PresetSchema.from_domain(preset) for preset in PRESET_QUERIES]
+        presets=[PresetSchema.from_domain(preset) for preset in library]
     )
 
 
