@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sql_query_agent.presets import PresetQuery
 from sql_query_agent.run.report import RunReport
+from sql_query_agent.schema_diagram import DatabaseSchema
 
 
 class PresetSchema(BaseModel):
@@ -32,6 +33,21 @@ class PresetsResponse(BaseModel):
     """Библиотека предустановленных запросов."""
 
     presets: list[PresetSchema] = Field(default_factory=list)
+
+
+class SchemaResponse(BaseModel):
+    """Схема базы для интерфейса: подпись и рисунок в псевдографике."""
+
+    caption: str = ""
+    diagram: str = ""
+
+    @classmethod
+    def from_domain(cls, schema: DatabaseSchema | None) -> "SchemaResponse":
+        """Построить ответ по загруженной схеме; `None` — пустая схема."""
+
+        if schema is None:
+            return cls()
+        return cls(caption=schema.caption, diagram=schema.diagram)
 
 
 class StartRunRequest(BaseModel):
@@ -208,6 +224,7 @@ __all__ = [
     "PresetSchema",
     "PresetsResponse",
     "RunReportSchema",
+    "SchemaResponse",
     "StartRunRequest",
     "StatsSchema",
 ]

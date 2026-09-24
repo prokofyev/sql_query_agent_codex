@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from sql_query_agent.logging_setup import get_logger
+from sql_query_agent.schema_diagram import SchemaError, load_schema
 from sql_query_agent.ui.client import AdvisorApiClient
 from sql_query_agent.ui.view import (
     ACCEPT_LABEL,
@@ -26,6 +27,7 @@ from sql_query_agent.ui.view import (
     PRESETS_CAPTION,
     REPLACEMENTS_CAPTION,
     RESULT_CAPTION,
+    SCHEMA_PANEL_CAPTION,
     SUBMIT_LABEL,
     TITLE,
     UNFIXABLE_CAPTION,
@@ -35,9 +37,29 @@ from sql_query_agent.ui.view import (
     form_enabled,
     pending_view,
     preset_sql,
+    schema_panel_text,
 )
 
 logger = get_logger(__name__)
+
+
+def _initial_schema() -> dict[str, Any]:
+    """Схема для первого рендера страницы.
+
+    Панель должна попасть в первую отрисовку: таймер NiceGUI дожидается
+    подключения клиента, а схема нужна сразу. Файл читается тем же
+    загрузчиком, что и в API, а отсутствие или повреждение файла просто
+    скрывают панель.
+    """
+
+    try:
+        schema = load_schema()
+    except SchemaError as error:
+        logger.warning("схема базы не загружена", error=str(error))
+        return {}
+    if schema is None:
+        return {}
+    return {"caption": schema.caption, "diagram": schema.diagram}
 
 
 async def run_submit(
@@ -139,7 +161,15 @@ def register_pages(
             "thread_id": "",
             "view": RunView(),
             "presets": list(presets or []),
+            "schema": _initial_schema(),
         }
+
+        with ui.card().classes("w-full") as schema_card:
+            ui.label(SCHEMA_PANEL_CAPTION).classes("text-sm text-gray-500")
+            schema_label = ui.label(schema_panel_text(state["schema"])).classes(
+                "font-mono text-xs whitespace-pre leading-tight overflow-x-auto"
+            )
+        schema_card.visible = bool(schema_panel_text(state["schema"]))
 
         with ui.card().classes("w-full"):
             sql_input = ui.textarea(
@@ -265,7 +295,17 @@ def register_pages(
                 preset_select.options = build_preset_labels(loaded)
                 preset_select.update()
 
+        async def load_schema() -> None:
+            """Загрузить схему базы при открытии страницы."""
+
+            loaded = await client.schema()
+            if loaded:
+                state["schema"] = loaded
+                schema_card.visible = bool(schema_panel_text(loaded))
+                schema_label.text = schema_panel_text(loaded)
+
         ui.timer(0.1, load_presets, once=True)
+        ui.timer(0.1, load_schema, once=True)
         render(RunView())
         sync_form()
 

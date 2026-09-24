@@ -20,6 +20,7 @@ SUBMIT_LABEL = "Проверить запрос"
 ACCEPT_LABEL = "Принять"
 DECLINE_LABEL = "Отказаться"
 PRESETS_CAPTION = "Готовые запросы"
+SCHEMA_PANEL_CAPTION = "Схема базы"
 PROGRESS_CAPTION = "Выполняется: создание индекса может занять заметное время"
 FIX_CAPTION = "Предложено исправление запроса"
 INDEX_CAPTION = "Предложен индекс"
@@ -258,6 +259,22 @@ def preset_sql(presets: list[dict[str, Any]], title: str) -> str:
     return ""
 
 
+def schema_panel_text(schema: dict[str, Any] | None) -> str:
+    """Текст панели схемы: подпись и рисунок в псевдографике.
+
+    Пустая схема (файла нет или он пуст) даёт пустой текст: панель тогда не
+    показывается, а поле ввода остаётся доступным.
+    """
+
+    if not schema:
+        return ""
+    caption = str(schema.get("caption") or "").strip()
+    diagram = str(schema.get("diagram") or "").rstrip("\n")
+    if not diagram:
+        return ""
+    return f"{caption}\n\n{diagram}" if caption else diagram
+
+
 __all__ = [
     "ACCEPT_LABEL",
     "DECLINE_LABEL",
@@ -273,6 +290,7 @@ __all__ = [
     "REPLACEMENTS_CAPTION",
     "RESULT_CAPTION",
     "SCHEMA_OK_CAPTION",
+    "SCHEMA_PANEL_CAPTION",
     "SCHEMA_SKIPPED_CAPTION",
     "UNFIXABLE_CAPTION",
     "SUBMIT_LABEL",
@@ -285,4 +303,5 @@ __all__ = [
     "form_enabled",
     "pending_view",
     "preset_sql",
+    "schema_panel_text",
 ]

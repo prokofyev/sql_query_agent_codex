@@ -9,6 +9,7 @@ from sql_query_agent.api.errors import (
     INVALID_SQL,
     NOT_FOUND,
     PRESETS_UNAVAILABLE,
+    SCHEMA_UNAVAILABLE,
     ApiError,
 )
 from sql_query_agent.api.schemas import (
@@ -18,6 +19,7 @@ from sql_query_agent.api.schemas import (
     PresetSchema,
     PresetsResponse,
     RunReportSchema,
+    SchemaResponse,
     StartRunRequest,
 )
 from sql_query_agent.db.explain import SqlNotAllowedError, prepare_statement
@@ -25,6 +27,7 @@ from sql_query_agent.logging_setup import get_logger
 from sql_query_agent.presets import PresetsError, load_presets
 from sql_query_agent.run.report import RunReport
 from sql_query_agent.run.session import SessionNotFoundError
+from sql_query_agent.schema_diagram import SchemaError, load_schema
 
 logger = get_logger(__name__)
 
@@ -65,6 +68,17 @@ async def presets() -> PresetsResponse:
     return PresetsResponse(
         presets=[PresetSchema.from_domain(preset) for preset in library]
     )
+
+
+@router.get("/schema", response_model=SchemaResponse)
+async def schema() -> SchemaResponse:
+    """Схема базы для панели интерфейса."""
+
+    try:
+        loaded = load_schema()
+    except SchemaError as error:
+        raise ApiError(SCHEMA_UNAVAILABLE, str(error), status_code=500) from error
+    return SchemaResponse.from_domain(loaded)
 
 
 @router.post("/runs", response_model=RunReportSchema)

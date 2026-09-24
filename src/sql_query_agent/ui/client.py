@@ -61,6 +61,19 @@ class AdvisorApiClient:
             return []
         return list(response.json().get("presets") or [])
 
+    async def schema(self) -> dict[str, Any]:
+        """Схема базы для панели интерфейса."""
+
+        try:
+            async with await self._client() as client:
+                response = await client.get("/schema")
+        except httpx.HTTPError as error:  # pragma: no cover - защита от сети
+            logger.warning("схема базы недоступна", error=str(error))
+            return {}
+        if response.status_code != 200:
+            return {}
+        return dict(response.json() or {})
+
     async def start(self, sql: str) -> RunView:
         """Запустить прогон по запросу."""
 

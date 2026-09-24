@@ -5,7 +5,11 @@ from typing import Any
 
 import pytest
 
-from sql_query_agent.api.errors import INVALID_SQL, PRESETS_UNAVAILABLE
+from sql_query_agent.api.errors import (
+    INVALID_SQL,
+    PRESETS_UNAVAILABLE,
+    SCHEMA_UNAVAILABLE,
+)
 from tests.api_fakes import FakeWorld, build_test_client
 from tests.fakes import FakeApply, FakeMeasure, FakeModel
 
@@ -278,6 +282,90 @@ async def test_presets_endpoint_with_broken_record_reports_error(
     assert response.status_code == 500
     assert response.json()["code"] == PRESETS_UNAVAILABLE
     assert "sql" in response.json()["message"]
+
+
+async def test_schema_endpoint_returns_diagram() -> None:
+    """Схема базы отдаётся из файла, заданного настройкой."""
+
+    client, _ = build_test_client()
+
+    response = await client.get("/schema")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["caption"]
+    assert "sku" in payload["diagram"]
+    assert "FK" in payload["diagram"]
+
+
+async def test_schema_endpoint_reads_from_configured_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Содержимое схемы определяется файлом, а не кодом."""
+
+    path = tmp_path / "schema.yaml"
+    path.write_text(
+        "caption: Из файла\n\ndiagram: |\n  +--+\n  | x|\n  +--+\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQA_SCHEMA__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/schema")
+
+    assert response.status_code == 200
+    assert response.json() == {"caption": "Из файла", "diagram": "+--+\n| x|\n+--+"}
+
+
+async def test_schema_endpoint_with_missing_file_gives_empty_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отсутствующий файл даёт пустую схему и не ломает эндпоинт."""
+
+    monkeypatch.setenv("SQA_SCHEMA__PATH", str(tmp_path / "no-such-file.yaml"))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/schema")
+
+    assert response.status_code == 200
+    assert response.json() == {"caption": "", "diagram": ""}
+
+
+async def test_schema_endpoint_with_empty_file_gives_empty_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Пустой файл схемы даёт пустую схему."""
+
+    path = tmp_path / "schema.yaml"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SQA_SCHEMA__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/schema")
+
+    assert response.status_code == 200
+    assert response.json() == {"caption": "", "diagram": ""}
+
+
+async def test_schema_endpoint_with_broken_file_reports_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Повреждённый файл даёт ошибку вместо частичной схемы."""
+
+    path = tmp_path / "schema.yaml"
+    path.write_text("caption: Без рисунка\n", encoding="utf-8")
+    monkeypatch.setenv("SQA_SCHEMA__PATH", str(path))
+
+    client, _ = build_test_client()
+
+    response = await client.get("/schema")
+
+    assert response.status_code == 500
+    assert response.json()["code"] == SCHEMA_UNAVAILABLE
+    assert "diagram" in response.json()["message"]
 
 
 async def test_invalid_body_is_reported_in_envelope() -> None:

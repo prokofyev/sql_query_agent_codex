@@ -12,6 +12,7 @@ INVALID_SQL = "invalid_sql"
 VALIDATION_ERROR = "validation_error"
 NOT_FOUND = "not_found"
 PRESETS_UNAVAILABLE = "presets_unavailable"
+SCHEMA_UNAVAILABLE = "schema_unavailable"
 
 
 class ApiError(RuntimeError):
@@ -56,6 +57,7 @@ __all__ = [
     "INVALID_SQL",
     "NOT_FOUND",
     "PRESETS_UNAVAILABLE",
+    "SCHEMA_UNAVAILABLE",
     "VALIDATION_ERROR",
     "ApiError",
     "install_error_handlers",

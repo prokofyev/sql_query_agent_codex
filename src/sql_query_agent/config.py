@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DSN = "postgresql://prokofyev@localhost:5432/products"
 DEFAULT_PRESETS_PATH = "resources/presets.yaml"
+DEFAULT_SCHEMA_PATH = "resources/schema.yaml"
 
 
 class DatabaseSettings(BaseSettings):
@@ -84,6 +85,19 @@ class PresetsSettings(BaseSettings):
     """
 
 
+class SchemaSettings(BaseSettings):
+    """Параметры схемы базы для интерфейса."""
+
+    model_config = SettingsConfigDict(env_prefix="SQA_SCHEMA__")
+
+    path: str = DEFAULT_SCHEMA_PATH
+    """Путь к YAML-файлу со схемой базы в псевдографике.
+
+    Отсутствующий или пустой файл даёт «схемы нет»: панель в интерфейсе не
+    показывается, остальное поведение не меняется.
+    """
+
+
 class Settings(BaseSettings):
     """Корневые настройки приложения."""
 
@@ -101,6 +115,13 @@ class Settings(BaseSettings):
     measurement: MeasurementSettings = Field(default_factory=MeasurementSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     presets: PresetsSettings = Field(default_factory=PresetsSettings)
+    schema_view: SchemaSettings = Field(default_factory=SchemaSettings)
+    """Схема базы для интерфейса.
+
+    Поле называется `schema_view`, а не `schema`, чтобы не перекрывать
+    атрибут `BaseSettings`: переменная окружения при этом остаётся
+    `SQA_SCHEMA__PATH`.
+    """
 
 
 @lru_cache

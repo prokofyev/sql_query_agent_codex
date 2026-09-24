@@ -32,6 +32,7 @@ from sql_query_agent.ui.view import (
     form_enabled,
     pending_view,
     preset_sql,
+    schema_panel_text,
 )
 from tests.api_fakes import FakeWorld, build_test_app, build_ui_client
 from tests.fakes import FakeApply, FakeMeasure, FakeModel
@@ -108,6 +109,33 @@ def test_empty_library_keeps_input_usable() -> None:
     assert build_preset_labels([]) == []
     assert preset_sql([], "Точечная выборка") == ""
     assert form_enabled(GOOD_SQL, busy=False) == (True, True)
+
+
+def test_schema_panel_combines_caption_and_diagram() -> None:
+    """Панель схемы содержит подпись и рисунок."""
+
+    text = schema_panel_text(
+        {"caption": "Схема products", "diagram": "+--+\n| x|\n+--+\n"}
+    )
+
+    assert text.startswith("Схема products")
+    assert "+--+" in text
+    assert text.endswith("+--+")
+
+
+def test_schema_panel_without_caption_shows_diagram() -> None:
+    """Без подписи панель показывает только рисунок."""
+
+    assert schema_panel_text({"diagram": "+--+"}) == "+--+"
+
+
+def test_schema_panel_is_empty_without_schema() -> None:
+    """Пустая схема даёт пустой текст, и панель не показывается."""
+
+    assert schema_panel_text(None) == ""
+    assert schema_panel_text({}) == ""
+    assert schema_panel_text({"caption": "Только подпись"}) == ""
+    assert schema_panel_text({"diagram": ""}) == ""
 
 
 def test_apply_preset_fills_input() -> None:
@@ -735,6 +763,33 @@ async def test_client_loads_presets() -> None:
     assert all("expected" not in preset for preset in presets)
 
 
+async def test_client_loads_schema() -> None:
+    """Клиент читает схему базы для панели интерфейса."""
+
+    client, _ = build_ui_client()
+
+    schema = await client.schema()
+
+    assert "sku" in schema.get("diagram", "")
+    assert schema.get("caption")
+
+
+async def test_client_with_empty_schema_returns_no_schema(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Пустой файл схемы приходит клиенту как пустая схема, а не ошибка."""
+
+    path = tmp_path / "schema.yaml"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SQA_SCHEMA__PATH", str(path))
+
+    client, _ = build_ui_client()
+
+    schema = await client.schema()
+
+    assert schema_panel_text(schema) == ""
+
+
 async def test_client_with_empty_library_returns_no_presets(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
@@ -802,7 +857,12 @@ async def test_mounted_page_renders_input_and_presets(mounted_ui_app: Any) -> No
 
     import httpx
 
-    from sql_query_agent.ui.view import INPUT_LABEL, MOUNT_PATH, SUBMIT_LABEL
+    from sql_query_agent.ui.view import (
+        INPUT_LABEL,
+        MOUNT_PATH,
+        SCHEMA_PANEL_CAPTION,
+        SUBMIT_LABEL,
+    )
 
     transport = httpx.ASGITransport(app=mounted_ui_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -812,6 +872,9 @@ async def test_mounted_page_renders_input_and_presets(mounted_ui_app: Any) -> No
     assert INPUT_LABEL in response.text
     assert SUBMIT_LABEL in response.text
     assert PRESETS_CAPTION in response.text
+    assert SCHEMA_PANEL_CAPTION in response.text
+    assert "product_size" in response.text
+    assert "100 000" in response.text
 
 
 def test_mount_ui_connects_client_to_application(monkeypatch: Any) -> None:

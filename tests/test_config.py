@@ -5,6 +5,7 @@ import pytest
 from sql_query_agent.config import (
     DEFAULT_DSN,
     DEFAULT_PRESETS_PATH,
+    DEFAULT_SCHEMA_PATH,
     Settings,
     get_settings,
     reset_settings_cache,
@@ -23,6 +24,7 @@ def test_defaults_are_usable_without_env(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.delenv("SQA_DATABASE__DSN", raising=False)
     monkeypatch.delenv("SQA_PRESETS__PATH", raising=False)
+    monkeypatch.delenv("SQA_SCHEMA__PATH", raising=False)
     settings = Settings(_env_file=None)
 
     assert settings.database.dsn == DEFAULT_DSN
@@ -30,6 +32,7 @@ def test_defaults_are_usable_without_env(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.database.agent_schema == "agent"
     assert settings.database.metrics_schema == "metrics"
     assert settings.presets.path == DEFAULT_PRESETS_PATH
+    assert settings.schema_view.path == DEFAULT_SCHEMA_PATH
 
 
 def test_nested_env_variables_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,6 +43,7 @@ def test_nested_env_variables_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SQA_MEASUREMENT__REPEAT_RUNS", "7")
     monkeypatch.setenv("SQA_GIGACHAT__SCOPE", "GIGACHAT_API_CORP")
     monkeypatch.setenv("SQA_PRESETS__PATH", "/tmp/custom-presets.yaml")
+    monkeypatch.setenv("SQA_SCHEMA__PATH", "/tmp/custom-schema.yaml")
 
     settings = Settings(_env_file=None)
 
@@ -48,6 +52,7 @@ def test_nested_env_variables_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.measurement.repeat_runs == 7
     assert settings.gigachat.scope == "GIGACHAT_API_CORP"
     assert settings.presets.path == "/tmp/custom-presets.yaml"
+    assert settings.schema_view.path == "/tmp/custom-schema.yaml"
 
 
 def test_credentials_are_not_exposed_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
