@@ -54,6 +54,7 @@ class RunView:
     warnings: list[str] = field(default_factory=list)
     sql: str = ""
     fixed_sql: str | None = None
+    fix_accepted: bool = False
     replacements: list[str] = field(default_factory=list)
     index_ddl: str | None = None
     index_reason: str = ""
@@ -82,6 +83,17 @@ class RunView:
         """Ждёт ли прогон решения по исправлению."""
 
         return self.awaiting_decision and self.step == "schema_fix"
+
+    @property
+    def shows_fix_proposal(self) -> bool:
+        """Показывать ли предложение об исправлении.
+
+        Принятое исправление больше не показывается: система уже обрабатывает
+        принятый запрос, и он остаётся видимым в поле ввода. Список замен при
+        этом сохраняется в отчёте, но пользователю не нужен.
+        """
+
+        return bool(self.fixed_sql) and not self.fix_accepted
 
     @property
     def needs_index_decision(self) -> bool:
@@ -177,6 +189,7 @@ def build_run_view(report: RunReport | None, *, sql: str = "") -> RunView:
         warnings=list(report.warnings),
         sql=report.current_sql or sql,
         fixed_sql=report.fix.fixed_sql if report.fix else None,
+        fix_accepted=report.decisions.get("fix") == "accepted",
         replacements=_replacement_lines(report),
         index_ddl=report.index.ddl if report.index else None,
         index_reason=report.index.reason if report.index else "",

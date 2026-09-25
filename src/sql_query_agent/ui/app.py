@@ -92,12 +92,19 @@ async def run_decision(
     *,
     accepted: bool,
     step: str,
+    sql: str = "",
     set_busy: Callable[[bool], None],
     show: Callable[[RunView], None],
 ) -> RunView:
-    """Передать решение пользователя и показать результат."""
+    """Передать решение пользователя и показать результат.
+
+    Пока система обрабатывает решение, экран показывает, что запрос
+    обрабатывается: иначе пользователь видел бы статус ожидания решения,
+    которого уже не требуется, всё время замера и подбора индекса.
+    """
 
     set_busy(True)
+    show(pending_view(sql=sql))
     try:
         view = await client.decide(thread_id, accepted=accepted, step=step)
     finally:
@@ -227,7 +234,7 @@ def register_pages(
             message_label.text = "\n".join(view.errors)
             unfixable_card.visible = bool(view.unfixable_message)
             unfixable_label.text = view.unfixable_message
-            fix_card.visible = bool(view.fixed_sql)
+            fix_card.visible = view.shows_fix_proposal
             fix_label.text = view.fixed_sql or ""
             replacements_label.text = "\n".join(view.replacements)
             index_card.visible = bool(view.index_ddl)
@@ -282,6 +289,7 @@ def register_pages(
                 client,
                 accepted=accepted,
                 step=step,
+                sql=sql_input.value or "",
                 set_busy=set_busy,
                 show=render,
             )

@@ -376,6 +376,89 @@ def test_fix_proposal_view_shows_replacements() -> None:
     assert view.needs_fix_decision is True
     assert view.fixed_sql == FIXED_SQL
     assert view.replacements == ["product_colr_id (таблица sku) → product_color_id"]
+    assert view.shows_fix_proposal is True
+
+
+def test_accepted_fix_hides_proposal_and_replacements() -> None:
+    """После принятия исправления предложение и список замен не показываются."""
+
+    report = build_report(
+        "t1",
+        {
+            "original_sql": TYPO_SQL,
+            "current_sql": FIXED_SQL,
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "column",
+                        "table": "sku",
+                        "name": "product_colr_id",
+                        "candidates": [{"name": "product_color_id", "score": 96.0}],
+                    }
+                ]
+            },
+            "fixed_sql": FIXED_SQL,
+            "fix_replacements": [
+                {
+                    "old_name": "product_colr_id",
+                    "new_name": "product_color_id",
+                    "kind": "column",
+                    "table": "sku",
+                }
+            ],
+            "fix_applied": True,
+            "before_stats": {"median_ms": 5.0, "minimum_ms": 4.0, "maximum_ms": 6.0, "runs": 3},
+            "proposal": {"ddl": "CREATE INDEX i ON sku (product_id)", "reason": "по фильтру"},
+        },
+        [{"step": "index_proposal"}],
+    )
+
+    view = build_run_view(report)
+
+    assert view.shows_fix_proposal is False
+    assert view.needs_fix_decision is False
+    assert view.fixed_sql == FIXED_SQL
+
+
+def test_declined_fix_keeps_proposal_visible() -> None:
+    """Отказ от исправления оставляет предложение видимым."""
+
+    report = build_report(
+        "t1",
+        {
+            "original_sql": TYPO_SQL,
+            "current_sql": TYPO_SQL,
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "column",
+                        "table": "sku",
+                        "name": "product_colr_id",
+                        "candidates": [{"name": "product_color_id", "score": 96.0}],
+                    }
+                ]
+            },
+            "fixed_sql": FIXED_SQL,
+            "fix_replacements": [
+                {
+                    "old_name": "product_colr_id",
+                    "new_name": "product_color_id",
+                    "kind": "column",
+                    "table": "sku",
+                }
+            ],
+            "fix_declined": True,
+            "status": "fix_declined",
+        },
+        [],
+    )
+
+    view = build_run_view(report)
+
+    assert view.shows_fix_proposal is True
+    assert view.replacements == ["product_colr_id (таблица sku) → product_color_id"]
 
 
 def test_index_proposal_view() -> None:
@@ -705,6 +788,61 @@ async def test_accepted_fix_becomes_the_measured_request() -> None:
     assert text == FIXED_SQL
     assert accepted.sql == FIXED_SQL
     assert accepted.needs_index_decision is True
+
+
+async def test_decision_shows_processing_status() -> None:
+    """Пока решение обрабатывается, экран показывает «Обработка запроса»."""
+
+    world = FakeWorld(model=FakeModel(fixed_sql=FIXED_SQL))
+    recorder = _RecordingView()
+    client = _client(world)
+
+    started = await run_submit(
+        TYPO_SQL, client, set_busy=recorder.set_busy, show=recorder.show
+    )
+    recorder.shown.clear()
+    recorder.busy_states.clear()
+    accepted = await run_decision(
+        started.thread_id,
+        client,
+        accepted=True,
+        step=started.step or "",
+        sql=FIXED_SQL,
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    assert recorder.shown[0].status_text == "Обработка запроса"
+    assert recorder.shown[0].shows_fix_proposal is False
+    assert recorder.busy_states == [True, False]
+    assert accepted.shows_fix_proposal is False
+    assert accepted.needs_index_decision is True
+
+
+async def test_declined_decision_shows_processing_and_keeps_proposal() -> None:
+    """Отказ тоже показывает обработку, но предложение при отказе остаётся."""
+
+    world = FakeWorld(model=FakeModel(fixed_sql=FIXED_SQL))
+    recorder = _RecordingView()
+    client = _client(world)
+
+    started = await run_submit(
+        TYPO_SQL, client, set_busy=recorder.set_busy, show=recorder.show
+    )
+    recorder.shown.clear()
+    declined = await run_decision(
+        started.thread_id,
+        client,
+        accepted=False,
+        step=started.step or "",
+        sql=TYPO_SQL,
+        set_busy=recorder.set_busy,
+        show=recorder.show,
+    )
+
+    assert recorder.shown[0].status_text == "Обработка запроса"
+    assert declined.shows_fix_proposal is True
+    assert declined.status_text == "Отказ от исправления: обработка завершена"
 
 
 async def test_declined_fix_keeps_input_text() -> None:
