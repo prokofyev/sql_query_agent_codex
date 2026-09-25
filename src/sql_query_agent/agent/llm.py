@@ -154,6 +154,79 @@ def format_ambiguous(unknown: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def restore_escaped_newlines(sql: str) -> str:
+    """Вернуть настоящие переносы строк в ответе модели.
+
+    GigaChat через структурированный вывод иногда отдаёт перевод строки парой
+    символов `\\` и `n`. Такой запрос PostgreSQL не исполняет, поэтому пару
+    нужно превратить в настоящий перевод строки. Внутри строковых литералов и
+    кавычек-идентификаторов текст не меняется: там `\\n` может быть частью
+    значения или регулярного выражения.
+    """
+
+    out: list[str] = []
+    index = 0
+    state = "code"
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        pair = sql[index : index + 2]
+        if state == "literal":
+            if pair == "''":
+                out.append(pair)
+                index += 2
+                continue
+            if char == "'":
+                state = "code"
+            out.append(char)
+            index += 1
+            continue
+        if state == "quoted":
+            if char == '"':
+                state = "code"
+            out.append(char)
+            index += 1
+            continue
+        if state == "block_comment" and pair == "*/":
+            state = "code"
+            out.append(pair)
+            index += 2
+            continue
+        if state == "code" and pair == "--":
+            state = "line_comment"
+            out.append(pair)
+            index += 2
+            continue
+        if state == "code" and pair == "/*":
+            state = "block_comment"
+            out.append(pair)
+            index += 2
+            continue
+        if state == "code" and char == "'":
+            state = "literal"
+            out.append(char)
+            index += 1
+            continue
+        if state == "code" and char == '"':
+            state = "quoted"
+            out.append(char)
+            index += 1
+            continue
+        if state == "line_comment" and pair == "\\n":
+            state = "code"
+        if pair == "\\n":
+            out.append("\n")
+            index += 2
+            continue
+        if pair == "\\t":
+            out.append("\t")
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 class GigaChatAdvisor:
     """Реализация советника поверх langchain_gigachat."""
 
@@ -205,7 +278,10 @@ class GigaChatAdvisor:
             HumanMessage(content="\n".join(parts)),
         ]
         result = await structured.ainvoke(messages)
-        return result.model_copy(update={"sql": result.sql.strip()})
+        sql = result.sql
+        if "\\n" in sql and "\n" not in sql:
+            sql = restore_escaped_newlines(sql)
+        return result.model_copy(update={"sql": sql.strip()})
 
     async def propose_index(
         self,

@@ -168,6 +168,34 @@ def test_unchanged_query_has_no_replacements() -> None:
     assert confirm_replacements(BOTH_CLAIMED, BOTH_ORIGINAL, BOTH_ORIGINAL) == []
 
 
+def test_escaped_newlines_break_replacement_confirmation() -> None:
+    """Текст с экранированными переносами не подтверждает замену.
+
+    Именно поэтому восстановление переносов нужно до подтверждения замен:
+    иначе карточка правки остаётся пустой.
+    """
+
+    original = "select sku_id,\n       product_id\nfrom skuu\nwhere product_id = 42"
+    escaped = "select sku_id,\\n       product_id\\nfrom sku\\nwhere product_id = 42"
+    claimed = [{"old_name": "skuu", "new_name": "sku", "kind": "table"}]
+
+    assert confirm_replacements(claimed, original, escaped) == []
+
+
+def test_restored_newlines_confirm_replacement() -> None:
+    """После восстановления переносов замена подтверждается."""
+
+    from sql_query_agent.agent.llm import restore_escaped_newlines
+
+    original = "select sku_id,\n       product_id\nfrom skuu\nwhere product_id = 42"
+    escaped = "select sku_id,\\n       product_id\\nfrom sku\\nwhere product_id = 42"
+    claimed = [{"old_name": "skuu", "new_name": "sku", "kind": "table"}]
+
+    replacements = confirm_replacements(claimed, original, restore_escaped_newlines(escaped))
+
+    assert [(item.old_name, item.new_name) for item in replacements] == [("skuu", "sku")]
+
+
 def test_claimed_replacement_absent_from_text_is_dropped() -> None:
     """Заявленная замена, которой нет в тексте, не попадает в список.
 
