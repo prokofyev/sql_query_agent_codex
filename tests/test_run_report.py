@@ -4,8 +4,8 @@ from sql_query_agent.domain_comparison import ComparisonVerdict
 from sql_query_agent.run.report import (
     RunStatus,
     build_report,
-    contains_identifier,
-    find_replacements,
+    confirm_replacements,
+    tokenize,
 )
 
 UNKNOWN = [
@@ -106,22 +106,34 @@ TYPOS_BOTH = [
 BOTH_ORIGINAL = "select * from sku2 where product_id2 = 42"
 BOTH_FIXED = "select * from sku where product_id = 42"
 
+# Замены в том виде, в каком их заявляет модель: старый формат `unknown`
+# остаётся у инструмента, а заявленные замены приходят отдельно.
+BOTH_CLAIMED = [
+    {"old_name": "sku2", "new_name": "sku", "kind": "table"},
+    {"old_name": "product_id2", "new_name": "product_id", "kind": "column"},
+]
 
-def test_identifier_match_ignores_substrings() -> None:
-    """Имя внутри более длинного имени не считается отдельным идентификатором."""
 
-    assert contains_identifier("select * from sku2", "sku") is False
-    assert contains_identifier("select * from skus", "sku") is False
-    assert contains_identifier("select * from sku where x = 1", "sku") is True
-    assert contains_identifier("product_id2", "product_id") is False
-    assert contains_identifier("product_id", "product_id") is True
-    assert contains_identifier("select sku, product_id from t", "sku") is True
+def test_tokenize_keeps_identifiers_whole() -> None:
+    """Токенизатор не рвёт имена и не склеивает их со знаками."""
+
+    assert tokenize("select * from sku2 where a = 1") == [
+        "select",
+        "*",
+        "from",
+        "sku2",
+        "where",
+        "a",
+        "=",
+        "1",
+    ]
+    assert tokenize("p.product_id") == ["p", ".", "product_id"]
 
 
 def test_substring_names_are_reported_as_replacements() -> None:
     """Замена с подстрочным новым именем попадает в список замен."""
 
-    replacements = find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, BOTH_FIXED)
+    replacements = confirm_replacements(BOTH_CLAIMED, BOTH_ORIGINAL, BOTH_FIXED)
 
     assert [(item.old_name, item.new_name) for item in replacements] == [
         ("sku2", "sku"),
@@ -130,10 +142,44 @@ def test_substring_names_are_reported_as_replacements() -> None:
     assert [item.kind for item in replacements] == ["table", "column"]
 
 
+def test_added_qualifier_is_confirmed_as_replacement() -> None:
+    """Квалификация колонки подтверждается, хотя имя колонки осталось прежним."""
+
+    claimed = [
+        {
+            "old_name": "brand_id",
+            "new_name": "product.brand_id",
+            "kind": "column",
+        }
+    ]
+    original = "select brand_id from product join brand on brand.brand_id = product.brand_id"
+    fixed = "select product.brand_id from product join brand on brand.brand_id = product.brand_id"
+
+    replacements = confirm_replacements(claimed, original, fixed)
+
+    assert [(item.old_name, item.new_name) for item in replacements] == [
+        ("brand_id", "product.brand_id")
+    ]
+
+
 def test_unchanged_query_has_no_replacements() -> None:
     """Совпадение исправленного и исходного запросов даёт пустой список замен."""
 
-    assert find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, BOTH_ORIGINAL) == []
+    assert confirm_replacements(BOTH_CLAIMED, BOTH_ORIGINAL, BOTH_ORIGINAL) == []
+
+
+def test_claimed_replacement_absent_from_text_is_dropped() -> None:
+    """Заявленная замена, которой нет в тексте, не попадает в список.
+
+    Так ведёт себя модель в случае «менять нечего»: она заявляет правку,
+    которой не делала.
+    """
+
+    claimed = [
+        {"old_name": "brand_name", "new_name": "brand.brand_name", "kind": "column"}
+    ]
+
+    assert confirm_replacements(claimed, BOTH_ORIGINAL, BOTH_ORIGINAL) == []
 
 
 def test_partial_fix_reports_only_applied_replacement() -> None:
@@ -141,7 +187,7 @@ def test_partial_fix_reports_only_applied_replacement() -> None:
 
     partially_fixed = "select * from sku where product_id2 = 42"
 
-    replacements = find_replacements(TYPOS_BOTH, BOTH_ORIGINAL, partially_fixed)
+    replacements = confirm_replacements(BOTH_CLAIMED, BOTH_ORIGINAL, partially_fixed)
 
     assert [(item.old_name, item.new_name) for item in replacements] == [("sku2", "sku")]
 
@@ -154,6 +200,14 @@ def _values(**overrides: object) -> dict[str, object]:
         "current_sql": ORIGINAL,
         "schema_checked": True,
         "schema_result": {"unknown": UNKNOWN},
+        "fix_replacements": [
+            {
+                "old_name": "product_colr_id",
+                "new_name": "product_color_id",
+                "kind": "column",
+                "table": "sku",
+            }
+        ],
     }
     values.update(overrides)
     return values
@@ -174,8 +228,8 @@ def test_awaiting_fix_decision() -> None:
     assert report.status.is_terminal is False
 
 
-def test_replacements_are_derived_from_text() -> None:
-    """Замены считаются по тексту запроса, а не по обещаниям модели."""
+def test_replacements_are_confirmed_by_text() -> None:
+    """Замены показываются, потому что текст запроса их подтверждает."""
 
     report = build_report("t1", _values(fixed_sql=FIXED), [{"step": "schema_fix"}])
 
@@ -192,6 +246,33 @@ def test_missing_replacement_is_not_reported() -> None:
 
     assert report.fix is not None
     assert report.fix.replacements == []
+
+
+def test_reported_replacement_ignores_unconfirmed_claims() -> None:
+    """В отчёт попадают только подтверждённые замены, а не все заявленные."""
+
+    report = build_report(
+        "t1",
+        _values(
+            fixed_sql=FIXED,
+            fix_replacements=[
+                {
+                    "old_name": "product_colr_id",
+                    "new_name": "product_color_id",
+                    "kind": "column",
+                },
+                {
+                    "old_name": "product_id",
+                    "new_name": "sku_id",
+                    "kind": "column",
+                },
+            ],
+        ),
+        [{"step": "schema_fix"}],
+    )
+
+    assert report.fix is not None
+    assert [item.new_name for item in report.fix.replacements] == ["product_color_id"]
 
 
 def test_declined_fix_is_terminal() -> None:

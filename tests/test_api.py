@@ -48,7 +48,7 @@ async def test_unfixable_names_are_reported_without_decision() -> None:
     """API отдаёт сообщение о ненайденных именах и не ждёт решения."""
 
     world = FakeWorld(
-        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+        model=FakeModel(entities={"tables": [MISSING_TABLE], "columns": []}),
         measure=FakeMeasure(),
     )
     client, _ = build_test_client(world)
@@ -73,7 +73,7 @@ async def test_decision_continues_run() -> None:
     client, world = build_test_client(
         FakeWorld(
             model=FakeModel(
-                entities=[{"table": "sku", "columns": ["product_colr_id"]}],
+                entities={"tables": ["sku"], "columns": ["product_colr_id"]},
                 fixed_sql=FIXED_SQL,
             ),
             apply=FakeApply(before_ms=100.0, after_ms=10.0),
@@ -185,7 +185,7 @@ async def test_stale_decision_for_closed_step_is_conflict() -> None:
     client, world = build_test_client(
         FakeWorld(
             model=FakeModel(
-                entities=[{"table": "sku", "columns": ["product_colr_id"]}],
+                entities={"tables": ["sku"], "columns": ["product_colr_id"]},
                 fixed_sql=FIXED_SQL,
             ),
             apply=FakeApply(before_ms=100.0, after_ms=10.0),

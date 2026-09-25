@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from sql_query_agent.agent.llm import AdvisorModel, IndexProposal
+from sql_query_agent.agent.llm import AdvisorModel, IndexProposal, SqlFix
 from sql_query_agent.logging_setup import get_logger
 from sql_query_agent.observability.metrics import RunMetrics
 
@@ -30,7 +30,7 @@ class MeteredAdvisor:
             "extract", self._model.extract_identifiers(sql, tools)
         )
 
-    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> str:
+    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> SqlFix:
         """Исправить запрос, посчитав обращение к модели."""
 
         return await self._call("fix", self._model.propose_fix(sql, unknown))

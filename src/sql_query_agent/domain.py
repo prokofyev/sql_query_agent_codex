@@ -6,26 +6,37 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
-
-
-class ColumnNames(BaseModel):
-    """Колонки одной таблицы в том виде, как они записаны в запросе."""
-
-    table: str = Field(description="Имя таблицы, как оно написано в запросе")
-    columns: list[str] = Field(
-        default_factory=list,
-        description="Имена колонок этой таблицы, как они написаны в запросе",
-    )
+from pydantic import BaseModel, Field, field_validator
 
 
 class SchemaEntities(BaseModel):
-    """Аргумент инструмента проверки имён."""
+    """Аргумент инструмента проверки имён.
 
-    entities: list[ColumnNames] = Field(
+    Модель перечисляет то, что видит в запросе, и не решает, какой таблице
+    принадлежит колонка: принадлежность определяет инструмент по каталогу
+    схемы. Поэтому колонки передаются отдельным списком, ровно как записаны,
+    а не сгруппированы по таблицам.
+    """
+
+    tables: list[str] = Field(
         default_factory=list,
-        description="Таблицы и колонки, извлечённые из запроса без исправления опечаток",
+        description="Настоящие имена таблиц запроса, без алиасов",
     )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Алиасы запроса парами «алиас=настоящая таблица», например b=brand",
+    )
+    columns: list[str] = Field(
+        default_factory=list,
+        description="Колонки запроса как написаны, с квалификатором, если он указан",
+    )
+
+    @field_validator("tables", "aliases", "columns", mode="before")
+    @classmethod
+    def _none_is_empty(cls, value: object) -> object:
+        """Модель иногда присылает `null` вместо пустого списка."""
+
+        return [] if value is None else value
 
 
 class NameCandidate(BaseModel):
@@ -43,12 +54,26 @@ class UnknownNameKind(StrEnum):
 
 
 class UnknownName(BaseModel):
-    """Ненайденное имя и предложенные замены."""
+    """Ненайденное имя и предложенные замены.
+
+    Сюда же попадают неоднозначные колонки: имя существует в схеме, но не в
+    одной таблице запроса, поэтому СУБД откажется его выполнять. Исправление —
+    квалификатор, а не замена имени, поэтому такие записи отмечены отдельно и
+    в качестве кандидатов несут квалифицированные имена.
+    """
 
     kind: UnknownNameKind
     table: str
     name: str
     candidates: list[NameCandidate] = Field(default_factory=list)
+    searched_tables: list[str] = Field(
+        default_factory=list,
+        description="Таблицы, в которых искали колонку",
+    )
+    ambiguous: bool = Field(
+        default=False,
+        description="Колонка есть в нескольких таблицах запроса",
+    )
 
     @property
     def is_fixable(self) -> bool:
@@ -73,14 +98,23 @@ class SchemaCheckResult(BaseModel):
         return [item for item in self.unknown if not item.is_fixable]
 
     @property
+    def ambiguous(self) -> list[UnknownName]:
+        """Колонки, которые есть более чем в одной таблице запроса."""
+
+        return [item for item in self.unknown if item.ambiguous]
+
+    @property
     def is_fixable(self) -> bool:
         """Можно ли исправить запрос: замены есть у всех ненайденных имён.
 
         Пустой список ненайденных имён исправлять нечего, поэтому он не
-        считается исправимым случаем.
+        считается исправимым случаем. Неоднозначные колонки исправимы всегда:
+        их лечит квалификатор.
         """
 
-        return bool(self.unknown) and not self.unfixable
+        if self.unfixable:
+            return False
+        return bool(self.unknown or self.ambiguous)
 
 
 class TimingStats(BaseModel):

@@ -5,9 +5,9 @@
 """
 
 from sql_query_agent.domain import (
-    ColumnNames,
     NameCandidate,
     SchemaCheckResult,
+    SchemaEntities,
     UnknownName,
     UnknownNameKind,
 )
@@ -77,10 +77,45 @@ def test_result_with_clean_schema_is_not_a_fix_case() -> None:
     assert result.is_fixable is False
 
 
-def test_column_names_carry_table() -> None:
-    """Модель «таблица — колонки» сохраняет имя таблицы как есть."""
+def test_entities_keep_names_as_written() -> None:
+    """Аргумент инструмента сохраняет имена ровно так, как их дала модель."""
 
-    entity = ColumnNames(table="skuu", columns=["sku_id"])
+    entities = SchemaEntities(
+        tables=["skuu"],
+        aliases=["p=product"],
+        columns=["p.product_id", "brand_name"],
+    )
 
-    assert entity.table == "skuu"
-    assert entity.columns == ["sku_id"]
+    assert entities.tables == ["skuu"]
+    assert entities.aliases == ["p=product"]
+    assert entities.columns == ["p.product_id", "brand_name"]
+
+
+def test_entities_tolerate_none_instead_of_list() -> None:
+    """Модель иногда присылает `null` вместо пустого списка."""
+
+    entities = SchemaEntities.model_validate({"tables": None, "aliases": None, "columns": None})
+
+    assert entities.tables == []
+    assert entities.aliases == []
+    assert entities.columns == []
+
+
+def test_result_is_fixable_with_only_ambiguous_column() -> None:
+    """Неоднозначная колонка исправима: её лечит квалификатор."""
+
+    result = SchemaCheckResult(
+        ok=False,
+        unknown=[
+            UnknownName(
+                kind=UnknownNameKind.COLUMN,
+                table="",
+                name="brand_id",
+                candidates=[NameCandidate(name="product.brand_id", score=100.0)],
+                ambiguous=True,
+            )
+        ],
+    )
+
+    assert [item.name for item in result.ambiguous] == ["brand_id"]
+    assert result.is_fixable is True

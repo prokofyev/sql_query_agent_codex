@@ -18,27 +18,41 @@ from sql_query_agent.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-EXTRACTION_SYSTEM_PROMPT = """Ты проверяешь имена объектов в SQL-запросе.
+EXTRACTION_SYSTEM_PROMPT = """Ты собираешь имена объектов из SQL-запроса.
 
-Найди в запросе все таблицы и относящиеся к ним колонки и вызови инструмент \
-check_schema, передав их списком.
+Вызови инструмент check_schema и передай ему три списка:
+
+- tables — настоящие имена таблиц запроса, без алиасов;
+- aliases — алиасы запроса парами «алиас=настоящая таблица», например b=brand;
+- columns — имена колонок ровно так, как они написаны, вместе с квалификатором, \
+если он есть в запросе (product.brand_id, brand_name).
 
 Важно: передавай имена ровно так, как они написаны в запросе. Не исправляй \
 опечатки и не догадывайся, что имелось в виду, — исправлением занимается \
-инструмент. Если запрос обращается к таблице через алиас, указывай настоящее \
-имя таблицы."""
+инструмент. Не решай, какой таблице принадлежит колонка: это определяет \
+инструмент по схеме базы. Колонку с квалификатором передавай вместе с \
+квалификатором, колонку без квалификатора — без него."""
 
-FIX_SYSTEM_PROMPT = """Ты исправляешь опечатки в именах объектов SQL-запроса.
+FIX_SYSTEM_PROMPT = """Ты исправляешь имена объектов SQL-запроса.
 
 Тебе дан исходный запрос и список ненайденных имён с похожими существующими \
 названиями. Исправь в запросе только имена, заменив их на предложенные \
 варианты. Ничего больше в запросе не меняй: не переписывай логику, не \
 добавляй и не удаляй условия, не меняй порядок и состав колонок.
 
+Среди имён могут быть неоднозначные колонки: они есть в нескольких таблицах \
+запроса, и СУБД откажется выполнять такой запрос. Такую колонку обязательно \
+квалифицируй именем одной из перечисленных таблиц, в которых она есть, \
+например brand_id → product.brand_id. Заменой имени это не является: само имя \
+колонки остаётся прежним.
+
 Если для имени не предложено ни одного варианта, не придумывай название \
 самостоятельно: оставь это имя в запросе как есть и не заменяй его.
 
-Верни полный текст исправленного запроса."""
+Верни полный текст исправленного запроса и список сделанных замен. В список \
+замен попадает только то, что ты действительно изменил, — по одной записи на \
+каждую замену, с прежним и новым написанием имени. Если ты ничего не менял, \
+список замен пуст."""
 
 INDEX_SYSTEM_PROMPT = """Ты предлагаешь индекс для ускорения SQL-запроса в PostgreSQL.
 
@@ -52,10 +66,27 @@ CREATE INDEX, которая может ускорить этот запрос, 
 меняет план, либо честно укажи, что индекс вряд ли поможет."""
 
 
+class NameReplacement(BaseModel):
+    """Замена имени, которую модель сделала в запросе.
+
+    Модель заявляет замены явно, но отчёт показывает только те из них,
+    которые подтверждаются различием исходного и исправленного запросов.
+    """
+
+    old_name: str = Field(description="Имя так, как оно записано в исходном запросе")
+    new_name: str = Field(description="Имя, которым оно заменено в исправленном запросе")
+    kind: str = Field(default="", description="Что это: table или column")
+    table: str = Field(default="", description="Таблица, к которой относится колонка")
+
+
 class SqlFix(BaseModel):
-    """Исправленный запрос."""
+    """Исправленный запрос и заявленные им замены."""
 
     sql: str = Field(description="Полный текст SQL-запроса с исправленными именами")
+    replacements: list[NameReplacement] = Field(
+        default_factory=list,
+        description="Замены имён, сделанные в запросе; пусто, если замен не было",
+    )
 
 
 class IndexProposal(BaseModel):
@@ -71,8 +102,8 @@ class AdvisorModel(Protocol):
     async def extract_identifiers(self, sql: str, tools: list[Any]) -> AIMessage:
         """Вернуть ответ модели, возможно с вызовом инструмента."""
 
-    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> str:
-        """Вернуть исправленный запрос."""
+    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> SqlFix:
+        """Вернуть исправленный запрос и заявленные замены."""
 
     async def propose_index(
         self,
@@ -88,6 +119,10 @@ def format_unknown(unknown: list[dict[str, Any]]) -> str:
 
     lines: list[str] = []
     for item in unknown:
+        if item.get("ambiguous"):
+            # Неоднозначные колонки описывает format_ambiguous: это не
+            # ненайденное имя, и путать их в промпте нельзя.
+            continue
         candidates = item.get("candidates") or []
         rendered = ", ".join(
             f"{candidate['name']} ({candidate['score']:.0f})" for candidate in candidates
@@ -96,6 +131,25 @@ def format_unknown(unknown: list[dict[str, Any]]) -> str:
         where = "" if item.get("kind") == "table" else f" в таблице {item.get('table')}"
         lines.append(
             f"- {kind}{where}: «{item['name']}» не найдено. Похожие: {rendered or 'нет'}"
+        )
+    return "\n".join(lines)
+
+
+def format_ambiguous(unknown: list[dict[str, Any]]) -> str:
+    """Описать неоднозначные колонки для промпта.
+
+    Неоднозначность — не ненайденное имя: колонка существует, но сразу в
+    нескольких таблицах запроса, поэтому её нужно квалифицировать.
+    """
+
+    lines: list[str] = []
+    for item in unknown:
+        if not item.get("ambiguous"):
+            continue
+        tables = ", ".join(str(table) for table in item.get("searched_tables") or [])
+        lines.append(
+            f"- колонка «{item.get('name')}» есть в таблицах: {tables}. "
+            "Квалифицируй её именем одной из этих таблиц."
         )
     return "\n".join(lines)
 
@@ -137,21 +191,21 @@ class GigaChatAdvisor:
         logger.info("модель вернула ответ", tool_calls=len(getattr(response, "tool_calls", [])))
         return response
 
-    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> str:
+    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> SqlFix:
         """Попросить модель исправить имена один раз."""
 
         structured = self._chat.with_structured_output(SqlFix)
+        parts = [f"Исходный запрос:\n{sql}\n"]
+        ambiguous = format_ambiguous(unknown)
+        if ambiguous:
+            parts.append(f"Неоднозначные колонки:\n{ambiguous}\n")
+        parts.append(f"Ненайденные имена и похожие варианты:\n{format_unknown(unknown)}")
         messages: list[BaseMessage] = [
             SystemMessage(content=FIX_SYSTEM_PROMPT),
-            HumanMessage(
-                content=(
-                    f"Исходный запрос:\n{sql}\n\n"
-                    f"Ненайденные имена и похожие варианты:\n{format_unknown(unknown)}"
-                )
-            ),
+            HumanMessage(content="\n".join(parts)),
         ]
         result = await structured.ainvoke(messages)
-        return result.sql.strip()
+        return result.model_copy(update={"sql": result.sql.strip()})
 
     async def propose_index(
         self,

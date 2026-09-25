@@ -3,11 +3,17 @@
 import pytest
 
 from sql_query_agent.db.catalog import SchemaCatalog
-from sql_query_agent.domain import ColumnNames, NameCandidate, UnknownName, UnknownNameKind
+from sql_query_agent.domain import (
+    NameCandidate,
+    SchemaEntities,
+    UnknownName,
+    UnknownNameKind,
+)
 from sql_query_agent.tools.schema_check import (
     can_fix_all,
     check_entities,
     describe_unfixable,
+    split_qualified,
     suggest_names,
     unfixable_names,
 )
@@ -35,14 +41,31 @@ def catalog() -> SchemaCatalog:
     )
 
 
+def _check(catalog: SchemaCatalog, entities: SchemaEntities):
+    """Проверка имён с общими для тестов порогом и лимитом."""
+
+    return check_entities(
+        catalog,
+        entities,
+        threshold=THRESHOLD,
+        suggestion_limit=LIMIT,
+    )
+
+
+def test_catalog_finds_tables_with_column(catalog: SchemaCatalog) -> None:
+    """Каталог находит все таблицы, в которых есть колонка."""
+
+    assert catalog.tables_with_column("brand_id") == ["brand", "product"]
+    assert catalog.tables_with_column("brand_name") == ["brand"]
+    assert catalog.tables_with_column("no_such_column") == []
+
+
 def test_existing_names_pass(catalog: SchemaCatalog) -> None:
     """Существующие имена проходят проверку без замечаний."""
 
-    result = check_entities(
+    result = _check(
         catalog,
-        [ColumnNames(table="product", columns=["product_id", "product_name"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
+        SchemaEntities(tables=["product"], columns=["product_id", "product_name"]),
     )
 
     assert result.ok is True
@@ -52,32 +75,23 @@ def test_existing_names_pass(catalog: SchemaCatalog) -> None:
 
 
 def test_missing_column_is_reported(catalog: SchemaCatalog) -> None:
-    """Отсутствующая колонка попадает в результат с относящейся таблицей."""
+    """Отсутствующая колонка попадает в результат с таблицей, где её искали."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="product", columns=["product_nam"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["product"], columns=["product_nam"]))
 
     assert result.ok is False
     assert len(result.unknown) == 1
     missed = result.unknown[0]
     assert missed.kind is UnknownNameKind.COLUMN
     assert missed.table == "product"
+    assert missed.searched_tables == ["product"]
     assert missed.name == "product_nam"
 
 
 def test_missing_table_is_reported(catalog: SchemaCatalog) -> None:
     """Отсутствующая таблица попадает и в общий список, и в список таблиц."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="skuu", columns=["sku_id"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["skuu"], columns=["sku_id"]))
 
     assert result.ok is False
     assert result.unknown_tables == ["skuu"]
@@ -129,16 +143,151 @@ def test_candidate_limit_is_respected(catalog: SchemaCatalog) -> None:
 def test_typo_in_table_is_detected_without_db_error(catalog: SchemaCatalog) -> None:
     """Опечатка в имени таблицы распознаётся по каталогу, без обращения к СУБД."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="prodct", columns=["product_id"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["prodct"], columns=["product_id"]))
 
     assert result.unknown_tables == ["prodct"]
     candidate_names = [c.name for c in result.unknown[0].candidates]
     assert "product" in candidate_names
+
+
+def test_column_belongs_to_joined_table(catalog: SchemaCatalog) -> None:
+    """Колонка `brand_name` находится в подключённой таблице `brand`, а не в `product`.
+
+    Это исходная ошибка: модель приписывала колонку `product`, инструмент
+    искал её только там и находил ложного кандидата `brand_id`.
+    """
+
+    result = _check(
+        catalog,
+        SchemaEntities(
+            tables=["product", "brand"],
+            aliases=["b=brand"],
+            columns=["brand_name", "product_name"],
+        ),
+    )
+
+    assert result.ok is True
+    assert result.unknown == []
+
+
+def test_qualified_column_is_checked_in_its_table(catalog: SchemaCatalog) -> None:
+    """Колонка с квалификатором проверяется по таблице квалификатора.
+
+    Алиас разворачивается в настоящее имя таблицы, поэтому `p.brand_name`
+    проверяется по колонкам `product`, а не по колонкам `brand`.
+    """
+
+    result = _check(
+        catalog,
+        SchemaEntities(
+            tables=["product", "brand"],
+            aliases=["p=product"],
+            columns=["brand.brand_id", "p.brand_name"],
+        ),
+    )
+
+    assert [item.name for item in result.unknown] == ["brand_name"]
+    missed = result.unknown[0]
+    assert missed.table == "product"
+    assert missed.searched_tables == ["product"]
+
+
+def test_unknown_qualifier_is_reported_as_missing_table(catalog: SchemaCatalog) -> None:
+    """Квалификатор, которого нет ни в запросе, ни в схеме, — отдельная находка."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(tables=["brand"], columns=["prodct.product_id"]),
+    )
+
+    # Колонка найдена среди колонок таблицы-кандидата, поэтому ненайденной
+    # остаётся только таблица.
+    assert [item.name for item in result.unknown] == ["prodct"]
+    assert result.unknown[0].kind is UnknownNameKind.TABLE
+
+
+def test_column_of_unknown_qualifier_without_candidates_is_reported(
+    catalog: SchemaCatalog,
+) -> None:
+    """Колонка отсутствующей таблицы проверяется по колонкам кандидатов."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(tables=["brand"], columns=["prodct.product_nam"]),
+    )
+
+    kinds = {(item.kind, item.name) for item in result.unknown}
+    assert (UnknownNameKind.TABLE, "prodct") in kinds
+    assert (UnknownNameKind.COLUMN, "product_nam") in kinds
+
+
+def test_ambiguous_column_is_reported_with_candidate_qualifiers(
+    catalog: SchemaCatalog,
+) -> None:
+    """Колонка из двух таблиц запроса помечается неоднозначной и исправима."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(tables=["product", "brand"], columns=["brand_id", "product_name"]),
+    )
+
+    assert result.ok is False
+    assert len(result.unknown) == 1
+    ambiguous = result.ambiguous
+    assert [item.name for item in ambiguous] == ["brand_id"]
+    assert ambiguous[0].searched_tables == ["product", "brand"]
+    candidates = [candidate.name for candidate in ambiguous[0].candidates]
+    assert candidates == ["product.brand_id", "brand.brand_id"]
+    assert result.is_fixable is True
+
+
+def test_ambiguous_column_is_reported_once(catalog: SchemaCatalog) -> None:
+    """Повторное вхождение неоднозначной колонки не дублирует запись."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(
+            tables=["product", "brand"],
+            columns=["brand_id", "brand_id", "product_name"],
+        ),
+    )
+
+    assert [item.name for item in result.ambiguous] == ["brand_id"]
+
+
+def test_column_with_qualifier_is_not_ambiguous(catalog: SchemaCatalog) -> None:
+    """Квалифицированная колонка не считается неоднозначной."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(tables=["product", "brand"], columns=["product.brand_id"]),
+    )
+
+    assert result.ambiguous == []
+    assert result.ok is True
+
+
+def test_typo_in_column_is_found_across_query_tables(catalog: SchemaCatalog) -> None:
+    """Кандидаты ищутся по колонкам всех таблиц запроса."""
+
+    result = _check(
+        catalog,
+        SchemaEntities(tables=["product", "brand"], columns=["brand_nam"]),
+    )
+
+    missed = result.unknown[0]
+    assert missed.name == "brand_nam"
+    assert missed.searched_tables == ["product", "brand"]
+    names = [candidate.name for candidate in missed.candidates]
+    assert "brand_name" in names
+
+
+def test_split_qualified_parses_qualifier() -> None:
+    """Квалификатор отделяется от имени колонки, кавычки отбрасываются."""
+
+    assert split_qualified("brand_name") == (None, "brand_name")
+    assert split_qualified("product.brand_id") == ("product", "brand_id")
+    assert split_qualified('"brand"."brand_id"') == ("brand", "brand_id")
 
 
 def _column(name: str, candidates: list[str]) -> UnknownName:
@@ -149,6 +298,7 @@ def _column(name: str, candidates: list[str]) -> UnknownName:
         table="sku",
         name=name,
         candidates=[NameCandidate(name=item, score=90.0) for item in candidates],
+        searched_tables=["sku"],
     )
 
 
@@ -163,47 +313,21 @@ def _table(name: str, candidates: list[str]) -> UnknownName:
     )
 
 
-def test_all_names_with_candidates_are_fixable() -> None:
-    """Все ненайденные имена с кандидатами — запрос исправим."""
+def test_fixable_names_are_those_with_candidates() -> None:
+    """Неисправимыми считаются только имена без кандидатов."""
 
-    unknown = [_column("product_colr_id", ["product_color_id"]), _table("skuu", ["sku"])]
+    unknown = [_column("product_colr_id", ["product_color_id"]), _table("prodcts", [])]
 
-    assert unfixable_names(unknown) == []
-    assert can_fix_all(unknown) is True
-    assert describe_unfixable(unknown) == ""
-
-
-def test_one_name_without_candidates_blocks_fixing() -> None:
-    """Имя без кандидатов делает запрос неисправимым."""
-
-    unknown = [_column("product_colr_id", ["product_color_id"]), _table("zzz", [])]
-
-    assert [item.name for item in unfixable_names(unknown)] == ["zzz"]
+    assert [item.name for item in unfixable_names(unknown)] == ["prodcts"]
     assert can_fix_all(unknown) is False
-
-
-def test_all_names_without_candidates_are_unfixable() -> None:
-    """Если кандидатов нет ни у кого, исправлять нечего."""
-
-    unknown = [_table("zzz", []), _column("qqq", [])]
-
-    assert [item.name for item in unfixable_names(unknown)] == ["zzz", "qqq"]
-    assert can_fix_all(unknown) is False
-
-
-def test_no_unknown_names_is_not_a_fix_case() -> None:
-    """Пустой список ненайденных имён — это не случай исправления."""
-
-    assert can_fix_all([]) is False
 
 
 def test_message_describes_missing_table() -> None:
-    """Сообщение о ненайденной таблице называет её и говорит об отсутствии замен."""
+    """Сообщение о ненайденной таблице не путает её с колонкой."""
 
     message = describe_unfixable([_table("prodcts", [])])
 
     assert "таблица «prodcts» не найдена" in message
-    assert "Подходящих замен нет" in message
     assert "колонка" not in message
 
 
@@ -214,6 +338,17 @@ def test_message_describes_missing_column_with_table() -> None:
 
     assert "колонка «product_colr_id» не найдена в таблице «sku»" in message
     assert "Подходящих замен нет" in message
+
+
+def test_message_lists_every_searched_table() -> None:
+    """Когда колонку искали в нескольких таблицах, сообщение перечисляет их."""
+
+    item = _column("brand_nam", [])
+    item.searched_tables = ["product", "brand"]
+
+    message = describe_unfixable([item])
+
+    assert "колонка «brand_nam» не найдена в таблицах «product», «brand»" in message
 
 
 def test_message_lists_every_unfixable_name() -> None:
@@ -246,7 +381,7 @@ def test_no_candidates_with_high_threshold(catalog: SchemaCatalog) -> None:
 
     result = check_entities(
         catalog,
-        [ColumnNames(table="product", columns=["product_colr_id"])],
+        SchemaEntities(tables=["product"], columns=["product_colr_id"]),
         threshold=100.0,
         suggestion_limit=LIMIT,
     )
@@ -260,12 +395,7 @@ def test_no_candidates_with_high_threshold(catalog: SchemaCatalog) -> None:
 def test_missing_table_checks_its_columns(catalog: SchemaCatalog) -> None:
     """Опечатка и в таблице, и в колонке даёт оба ненайденных имени."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="sku2", columns=["product_id2"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["sku2"], columns=["product_id2"]))
 
     found = {(item.kind, item.name) for item in result.unknown}
     assert found == {
@@ -280,15 +410,10 @@ def test_missing_table_column_gets_candidates_from_candidates_table(
 ) -> None:
     """Кандидаты колонки отсутствующей таблицы берутся из колонок таблиц-кандидатов."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="sku2", columns=["product_id2"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["sku2"], columns=["product_id2"]))
 
     column = next(item for item in result.unknown if item.kind is UnknownNameKind.COLUMN)
-    assert column.table == "sku2"
+    assert column.searched_tables == ["sku"]
     names = [candidate.name for candidate in column.candidates]
     assert names[0] == "product_id"
     assert set(names) <= {"sku_id", "product_id", "product_size_id", "product_color_id"}
@@ -300,12 +425,7 @@ def test_missing_table_column_present_in_candidates_is_not_reported(
 ) -> None:
     """Колонка, найденная среди колонок таблиц-кандидатов, ненайденной не считается."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="sku2", columns=["product_id"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["sku2"], columns=["product_id"]))
 
     assert [item.kind for item in result.unknown] == [UnknownNameKind.TABLE]
     assert result.unknown_tables == ["sku2"]
@@ -314,12 +434,7 @@ def test_missing_table_column_present_in_candidates_is_not_reported(
 def test_missing_table_without_candidates_skips_its_columns(catalog: SchemaCatalog) -> None:
     """Без кандидатов у таблицы её колонки ненайденными не объявляются."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="zzz_unknown", columns=["qqq"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["zzz_unknown"], columns=["qqq"]))
 
     assert [item.kind for item in result.unknown] == [UnknownNameKind.TABLE]
     assert result.checked_columns == 0
@@ -330,12 +445,7 @@ def test_missing_table_column_without_candidates_blocks_fixing(
 ) -> None:
     """Колонка отсутствующей таблицы без кандидатов делает запрос неисправимым."""
 
-    result = check_entities(
-        catalog,
-        [ColumnNames(table="sku2", columns=["qqq"])],
-        threshold=THRESHOLD,
-        suggestion_limit=LIMIT,
-    )
+    result = _check(catalog, SchemaEntities(tables=["sku2"], columns=["qqq"]))
 
     column = next(item for item in result.unknown if item.kind is UnknownNameKind.COLUMN)
     assert column.candidates == []

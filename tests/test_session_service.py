@@ -51,14 +51,14 @@ class _FlakyJournal:
 def _clean_model() -> FakeModel:
     """Модель, которая не находит опечаток в чистом запросе."""
 
-    return FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    return FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
 
 
 def _typo_model() -> FakeModel:
     """Модель, которая сообщает об опечатке в колонке."""
 
     return FakeModel(
-        entities=[{"table": "sku", "columns": ["product_colr_id"]}],
+        entities={"tables": ["sku"], "columns": ["product_colr_id"]},
         fixed_sql="select * from sku where product_color_id = 1",
     )
 

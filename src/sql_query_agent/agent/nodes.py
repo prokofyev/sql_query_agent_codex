@@ -83,16 +83,15 @@ async def extract_and_check(
     if args is None:
         logger.warning("модель не вызвала инструмент проверки имён")
         return {
-            "entities": [],
+            "entities": {},
             "schema_result": None,
             "schema_checked": False,
             "warnings": [*_warnings(state), NO_TOOL_CALL_WARNING],
         }
 
-    entities = list(args.get("entities") or [])
-    result = await checker.run(entities)
+    result = await checker.run(args)
     return {
-        "entities": entities,
+        "entities": args,
         "schema_result": result,
         "schema_checked": True,
     }
@@ -112,6 +111,8 @@ def needs_fix(state: AgentState) -> str:
     unknown = list(result.get("unknown") or [])
     if not unknown:
         return "measure"
+    # Неоднозначные колонки приходят в том же списке и исправимы всегда:
+    # их лечит квалификатор, предложенный инструментом.
     if can_fix_all(_unknown_names(unknown)):
         return "prepare_fix"
     return "report_unfixable"
@@ -137,6 +138,7 @@ def report_unfixable(state: AgentState) -> dict[str, Any]:
     logger.info("имена не найдены, замен нет", unknown=len(unknown))
     return {
         "fixed_sql": None,
+        "fix_replacements": [],
         "unfixable_message": message,
         "status": UNFIXABLE_STATUS,
     }
@@ -157,9 +159,18 @@ async def prepare_fix(state: AgentState, *, model: AdvisorModel) -> dict[str, An
         logger.warning("исправление без кандидатов пропущено", unknown=len(unknown))
         return report_unfixable(state)
 
-    fixed = await model.propose_fix(state["current_sql"], unknown)
-    logger.info("модель предложила исправление", length=len(fixed))
-    return {"fixed_sql": fixed}
+    fix = await model.propose_fix(state["current_sql"], unknown)
+    logger.info(
+        "модель предложила исправление",
+        length=len(fix.sql),
+        replacements=len(fix.replacements),
+    )
+    return {
+        "fixed_sql": fix.sql,
+        # Заявленные замены сохраняются вместе с текстом: подтверждение по
+        # различию текстов делается позже, при сборке отчёта.
+        "fix_replacements": [item.model_dump(mode="json") for item in fix.replacements],
+    }
 
 
 async def confirm_fix(state: AgentState) -> dict[str, Any]:

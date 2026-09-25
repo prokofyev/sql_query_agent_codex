@@ -21,6 +21,7 @@ class AgentState(TypedDict, total=False):
     warnings: list[str]
 
     fixed_sql: str | None
+    fix_replacements: list[dict[str, Any]]
     fix_applied: bool
     fix_declined: bool
     unfixable_message: str | None

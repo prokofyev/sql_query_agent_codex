@@ -127,6 +127,9 @@ def _report(payload: dict[str, Any]) -> RunReport:
             "warnings": payload.get("warnings") or [],
             "unfixable_message": payload.get("unfixable_message") or "",
             "fixed_sql": (payload.get("fix") or {}).get("fixed_sql"),
+            # API уже подтвердил замены по тексту; здесь они передаются дальше
+            # без повторной проверки, иначе экран потерял бы список замен.
+            "fix_replacements": (payload.get("fix") or {}).get("replacements") or [],
             "proposal": _proposal(payload),
             "before_stats": _before_stats(payload),
             "apply_result": _apply_result(comparison),

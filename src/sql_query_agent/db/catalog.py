@@ -36,6 +36,15 @@ class SchemaCatalog:
 
         return list(self.tables.get(table, set()))
 
+    def tables_with_column(self, column: str) -> list[str]:
+        """Таблицы, в которых есть такая колонка, в порядке объявления.
+
+        Нужен, чтобы отличить однозначную принадлежность колонки от
+        неоднозначной: одно и то же имя может быть в нескольких таблицах.
+        """
+
+        return [table for table, columns in self.tables.items() if column in columns]
+
     @classmethod
     def from_rows(cls, rows: Iterable[tuple[str, str]]) -> "SchemaCatalog":
         """Собрать каталог из пар «таблица — колонка»."""

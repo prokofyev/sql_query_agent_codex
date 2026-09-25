@@ -5,6 +5,7 @@
 же штатное состояние прогона, как и завершение.
 """
 
+from difflib import SequenceMatcher
 from enum import StrEnum
 from typing import Any
 
@@ -20,9 +21,6 @@ DECISION_ACCEPTED = "accepted"
 DECISION_DECLINED = "declined"
 INDEX_NOT_OFFERED = "not_offered"
 
-IDENTIFIER_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-)
 
 
 class RunStatus(StrEnum):
@@ -131,61 +129,119 @@ def _stats(raw: dict[str, Any] | None) -> Stats | None:
     )
 
 
-def find_replacements(
-    unknown: list[dict[str, Any]],
+def tokenize(sql: str) -> list[str]:
+    """Разбить текст запроса на токены: идентификаторы и знаки по одному.
+
+    Идентификатор начинается с буквы или подчёркивания, поэтому число вроде
+    `42` и слово `sku2` — цельные токены, а точка в `product.brand_id` —
+    отдельный токен. Сравнение идёт по токенам, а не по подстрокам: иначе
+    добавление квалификатора выглядело бы как вставка символа внутри имени.
+    """
+
+    def is_identifier_char(char: str) -> bool:
+        """Символ может быть частью имени: буква, цифра или подчёркивание."""
+
+        return char == "_" or char.isalnum()
+
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in sql:
+        if is_identifier_char(char):
+            current.append(char)
+            continue
+        if current:
+            tokens.append("".join(current))
+            current = []
+        if not char.isspace():
+            tokens.append(char)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _words(tokens: list[str]) -> list[str]:
+    """Только имена: знаки препинания, кавычки и числа отбрасываются."""
+
+    return [token for token in tokens if token[:1].isalpha() or token[:1] == "_"]
+
+
+def confirm_replacements(
+    claimed: list[dict[str, Any]],
     original_sql: str,
     fixed_sql: str,
 ) -> list[Replacement]:
-    """Определить, какие имена модель действительно заменила.
+    """Оставить только те заявленные замены, которые подтверждает текст.
 
-    Замена считается выполненной, если предложенное инструментом имя есть в
-    исправленном запросе и отсутствовало в исходном. Список строится по факту
-    текста, а не по обещаниям модели: иначе пользователю показывались бы
-    замены, которых в запросе нет.
+    Модель называет замены сама, но верить ей на слово нельзя: в случае
+    «менять нечего» она заявляет несуществующую правку. Поэтому замена
+    попадает в список, только если различие токенов исходного и исправленного
+    запросов её объясняет.
     """
 
+    if not claimed or original_sql == fixed_sql:
+        return []
+
+    original_tokens = tokenize(original_sql)
+    fixed_tokens = tokenize(fixed_sql)
+    changes = [
+        (tag, original_tokens[i1:i2], fixed_tokens[j1:j2])
+        for tag, i1, i2, j1, j2 in SequenceMatcher(
+            None, original_tokens, fixed_tokens
+        ).get_opcodes()
+        if tag != "equal"
+    ]
+    if not changes:
+        return []
+
     replacements: list[Replacement] = []
-    for item in unknown:
-        name = str(item.get("name") or "")
-        if not name or contains_identifier(fixed_sql, name):
+    for item in claimed:
+        old_name = str(item.get("old_name") or "")
+        new_name = str(item.get("new_name") or "")
+        if not old_name or not new_name or old_name.strip() == new_name.strip():
             continue
-        for candidate in item.get("candidates") or []:
-            candidate_name = str(candidate.get("name") or "")
-            if (
-                candidate_name
-                and contains_identifier(fixed_sql, candidate_name)
-                and not contains_identifier(original_sql, candidate_name)
-            ):
-                replacements.append(
-                    Replacement(
-                        kind=str(item.get("kind") or ""),
-                        table=str(item.get("table") or ""),
-                        old_name=name,
-                        new_name=candidate_name,
-                    )
-                )
-                break
+        if not _diff_supports(changes, old_name, new_name):
+            continue
+        replacements.append(
+            Replacement(
+                kind=str(item.get("kind") or ""),
+                table=str(item.get("table") or ""),
+                old_name=old_name,
+                new_name=new_name,
+            )
+        )
     return replacements
 
 
-def contains_identifier(text: str, name: str) -> bool:
-    """Встречается ли имя в тексте отдельным идентификатором, а не подстрокой.
+def _diff_supports(
+    changes: list[tuple[str, list[str], list[str]]],
+    old_name: str,
+    new_name: str,
+) -> bool:
+    """Объясняет ли различие текстов эту замену.
 
-    Соседние символы не должны быть символами идентификатора: иначе `sku`
-    внутри `sku2` считалось бы присутствием `sku`, а замена `sku2` на `sku`
-    не попала бы в список замен.
+    Различие считается подтверждением в двух случаях: имя заменено целиком
+    (`product_colr_id` → `product_color_id`) или к неизменённому имени
+    добавлен квалификатор (`brand_id` → `product.brand_id`). Частичный
+    квалификатор и «замена», которой в тексте нет, не подтверждаются.
     """
 
-    if not name:
+    old_words = _words(tokenize(old_name))
+    new_words = _words(tokenize(new_name))
+    if not old_words or not new_words:
         return False
-    start = text.find(name)
-    while start != -1:
-        end = start + len(name)
-        before = text[start - 1] if start > 0 else ""
-        after = text[end] if end < len(text) else ""
-        if before not in IDENTIFIER_CHARS and after not in IDENTIFIER_CHARS:
+
+    for _tag, old_segment, new_segment in changes:
+        changed_old = _words(old_segment)
+        changed_new = _words(new_segment)
+        if changed_old == old_words and changed_new == new_words:
             return True
-        start = text.find(name, start + 1)
+        if (
+            not changed_old
+            and changed_new == new_words[:-1]
+            and new_words[-1] == old_words[-1]
+            and changed_new
+        ):
+            return True
     return False
 
 
@@ -272,9 +328,9 @@ def build_report(
         fix = FixProposal(
             original_sql=original_sql,
             fixed_sql=str(fixed_sql),
-            replacements=find_replacements(
-                list((values.get("schema_result") or {}).get("unknown") or []),
-                original_sql if step == FIX_STEP else current_sql,
+            replacements=confirm_replacements(
+                list(values.get("fix_replacements") or []),
+                original_sql,
                 str(fixed_sql),
             ),
         )

@@ -23,6 +23,7 @@ from sql_query_agent.agent.graph import (
     build_graph,
 )
 from sql_query_agent.db.catalog import SchemaCatalog
+from sql_query_agent.run.report import build_report
 from tests.fakes import FakeApply, FakeChecker, FakeMeasure, FakeModel
 
 CATALOG = SchemaCatalog.from_rows(
@@ -73,7 +74,7 @@ async def _interrupts(graph: Any, config: dict[str, Any]) -> list[dict[str, Any]
 async def test_clean_query_skips_fix_and_asks_about_index() -> None:
     """Запрос без опечаток не идёт в исправление и доходит до предложения индекса."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     graph = _graph(model, FakeMeasure(), FakeApply())
     config = _config("clean")
 
@@ -154,7 +155,7 @@ async def test_missing_tool_call_produces_warning_and_continues() -> None:
 async def test_declined_index_stops_without_applying() -> None:
     """Отказ от индекса завершает обработку: индекс не применяется."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     apply = FakeApply()
     graph = _graph(model, FakeMeasure(), apply)
     config = _config("decline-index")
@@ -170,7 +171,7 @@ async def test_declined_index_stops_without_applying() -> None:
 async def test_full_cycle_reports_speedup() -> None:
     """Полный цикл с принятием индекса даёт сравнение с ускорением."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     apply = FakeApply(before_ms=100.0, after_ms=10.0)
     graph = _graph(model, FakeMeasure(), apply)
     config = _config("full")
@@ -187,7 +188,7 @@ async def test_full_cycle_reports_speedup() -> None:
 async def test_cycle_without_speedup_is_a_normal_result() -> None:
     """Отсутствие ускорения — обычный результат, а не ошибка."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     apply = FakeApply(before_ms=15.0, after_ms=14.9)
     graph = _graph(model, FakeMeasure(), apply)
     config = _config("no-speedup")
@@ -205,7 +206,7 @@ async def test_cycle_without_speedup_is_a_normal_result() -> None:
 async def test_measure_failure_stops_before_index_proposal() -> None:
     """Ошибка замера останавливает обработку до предложения индекса."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     graph = _graph(model, FakeMeasure(ok=False), FakeApply())
     config = _config("measure-fail")
 
@@ -224,7 +225,7 @@ async def test_model_is_called_once_despite_resume() -> None:
     фиксирует, что схема действительно экономит обращения к модели.
     """
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     measure = FakeMeasure()
     apply = FakeApply()
     graph = _graph(model, measure, apply)
@@ -333,11 +334,82 @@ def test_needs_fix_skips_check_when_tool_was_not_called() -> None:
     assert nodes.needs_fix({"schema_checked": False}) == "measure"
 
 
+def test_needs_fix_routes_ambiguous_column_to_prepare_fix() -> None:
+    """Неоднозначная колонка исправима: её лечит квалификатор."""
+
+    route = nodes.needs_fix(
+        {
+            "schema_checked": True,
+            "schema_result": {
+                "unknown": [
+                    {
+                        "kind": "column",
+                        "table": "",
+                        "name": "brand_id",
+                        "candidates": [
+                            {"name": "product.brand_id", "score": 100.0},
+                            {"name": "brand.brand_id", "score": 100.0},
+                        ],
+                        "searched_tables": ["product", "brand"],
+                        "ambiguous": True,
+                    }
+                ]
+            },
+        }
+    )
+
+    assert route == "prepare_fix"
+
+
+async def test_ambiguous_column_is_qualified_before_measuring() -> None:
+    """Запрос с `brand_id` из двух таблиц не доходит до замера без квалификатора.
+
+    СУБД отказалась бы выполнять такой запрос с ошибкой «column reference is
+    ambiguous», поэтому прогон обязан остановиться на подтверждении исправления.
+    """
+
+    qualified = (
+        "select product.brand_id, product_name "
+        "from product join brand on brand.brand_id = product.brand_id"
+    )
+    ambiguous_sql = (
+        "select brand_id, product_name "
+        "from product join brand on brand.brand_id = product.brand_id"
+    )
+    model = FakeModel(
+        entities={"tables": ["product", "brand"], "columns": ["brand_id", "product_name"]},
+        fixed_sql=qualified,
+    )
+    measure = FakeMeasure()
+    graph = _graph(model, measure, FakeApply())
+    config = _config("ambiguous")
+
+    await graph.ainvoke({"current_sql": ambiguous_sql}, config)
+
+    stopped = await _interrupts(graph, config)
+    assert stopped[0]["step"] == "schema_fix"
+    assert stopped[0]["fixed_sql"] == qualified
+    assert measure.calls == 0
+    assert model.fix_calls == 1
+
+    # Квалификация попадает в список замен, хотя имя колонки не изменилось.
+    snapshot = await graph.aget_state(config)
+    report = build_report(
+        "ambiguous",
+        dict(snapshot.values),
+        [dict(item.value) for item in (snapshot.interrupts or [])],
+    )
+    assert report.fix is not None
+    assert [(item.old_name, item.new_name) for item in report.fix.replacements] == [
+        ("brand_id", "product.brand_id")
+    ]
+
+
 async def test_unfixable_names_end_session_without_model_or_measure() -> None:
     """Имя без замен завершает сессию: модель исправления и замер не вызываются."""
 
     model = FakeModel(
-        entities=[{"table": MISSING_TABLE, "columns": []}],
+        entities={"tables": [MISSING_TABLE], "columns": []},
         fixed_sql=FIXED_SQL,
     )
     measure = FakeMeasure()
@@ -358,7 +430,7 @@ async def test_unfixable_names_end_session_without_model_or_measure() -> None:
 async def test_unfixable_column_names_table_in_message() -> None:
     """Сообщение о ненайденной колонке содержит колонку и таблицу из запроса."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": [MISSING_COLUMN]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": [MISSING_COLUMN]})
     graph = _graph(model, FakeMeasure(), FakeApply())
     config = _config("unfixable-column")
 
@@ -376,7 +448,7 @@ async def test_mixed_case_ends_session_without_partial_fix() -> None:
     """Если одно имя исправимо, а другое нет, частичная правка не выполняется."""
 
     model = FakeModel(
-        entities=[{"table": "sku", "columns": ["product_colr_id", MISSING_COLUMN]}],
+        entities={"tables": ["sku"], "columns": ["product_colr_id", MISSING_COLUMN]},
         fixed_sql=FIXED_SQL,
     )
     measure = FakeMeasure()

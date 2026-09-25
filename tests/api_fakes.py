@@ -41,7 +41,7 @@ class FakeWorld:
         apply: FakeApply | None = None,
     ) -> None:
         self.model = model or FakeModel(
-            entities=[{"table": "sku", "columns": ["product_id"]}],
+            entities={"tables": ["sku"], "columns": ["product_id"]},
         )
         self.measure = measure or FakeMeasure()
         self.apply = apply or FakeApply()

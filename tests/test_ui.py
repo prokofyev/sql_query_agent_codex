@@ -185,6 +185,14 @@ def _fix_view(sql: str = TYPO_SQL, fixed_sql: str = FIXED_SQL) -> RunView:
                     ]
                 },
                 "fixed_sql": fixed_sql,
+                "fix_replacements": [
+                    {
+                        "old_name": "product_colr_id",
+                        "new_name": "product_color_id",
+                        "kind": "column",
+                        "table": "sku",
+                    }
+                ],
             },
             [{"step": "schema_fix"}],
         )
@@ -253,6 +261,14 @@ def test_decision_input_text_ignores_stale_fix_on_index_step() -> None:
                 ]
             },
             "fixed_sql": FIXED_SQL,
+            "fix_replacements": [
+                {
+                    "old_name": "product_colr_id",
+                    "new_name": "product_color_id",
+                    "kind": "column",
+                    "table": "sku",
+                }
+            ],
             "fix_applied": True,
             "before_stats": {"median_ms": 5.0, "minimum_ms": 4.0, "maximum_ms": 6.0, "runs": 3},
             "proposal": {"ddl": "CREATE INDEX i ON sku (product_id)", "reason": "по фильтру"},
@@ -343,6 +359,14 @@ def test_fix_proposal_view_shows_replacements() -> None:
                 ]
             },
             "fixed_sql": FIXED_SQL,
+            "fix_replacements": [
+                {
+                    "old_name": "product_colr_id",
+                    "new_name": "product_color_id",
+                    "kind": "column",
+                    "table": "sku",
+                }
+            ],
         },
         [{"step": "schema_fix"}],
     )
@@ -877,7 +901,7 @@ async def test_client_decodes_comparison_from_api() -> None:
     """Ответ API о сравнении превращается в модель экрана с обеими ветвями."""
 
     world = FakeWorld(
-        model=FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}]),
+        model=FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]}),
         measure=FakeMeasure(),
         apply=FakeApply(before_ms=100.0, after_ms=10.0),
     )
@@ -896,7 +920,7 @@ async def test_client_decodes_unfixable_message_from_api() -> None:
     """Клиент доносит сообщение о ненайденных именах до модели экрана."""
 
     world = FakeWorld(
-        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+        model=FakeModel(entities={"tables": [MISSING_TABLE], "columns": []}),
     )
     client, _ = build_ui_client(world)
 

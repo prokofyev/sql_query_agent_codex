@@ -36,7 +36,7 @@ def _typo_world(**kwargs: Any) -> FakeWorld:
     """Мир с моделью, которая находит опечатку и исправляет её."""
 
     model = FakeModel(
-        entities=[{"table": "sku", "columns": ["product_colr_id"]}],
+        entities={"tables": ["sku"], "columns": ["product_colr_id"]},
         fixed_sql=FIXED_SQL,
     )
     return FakeWorld(model=model, **kwargs)
@@ -45,7 +45,7 @@ def _typo_world(**kwargs: Any) -> FakeWorld:
 def _clean_world(**kwargs: Any) -> FakeWorld:
     """Мир с моделью, которая не находит опечаток."""
 
-    model = FakeModel(entities=[{"table": "sku", "columns": ["product_id"]}])
+    model = FakeModel(entities={"tables": ["sku"], "columns": ["product_id"]})
     return FakeWorld(model=model, **kwargs)
 
 
@@ -98,7 +98,7 @@ async def test_unfixable_name_ends_session_and_writes_journal() -> None:
     """Имя без похожих названий: сообщение, конец сессии, запись в журнал."""
 
     world = FakeWorld(
-        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+        model=FakeModel(entities={"tables": [MISSING_TABLE], "columns": []}),
     )
     client, _ = build_test_client(world)
 
@@ -125,7 +125,7 @@ async def test_unfixable_name_is_counted_in_metrics() -> None:
 
     registry = CollectorRegistry()
     world = FakeWorld(
-        model=FakeModel(entities=[{"table": MISSING_TABLE, "columns": []}]),
+        model=FakeModel(entities={"tables": [MISSING_TABLE], "columns": []}),
     )
     world.metrics = RunMetrics(registry)
     client, _ = build_test_client(world)
@@ -141,7 +141,7 @@ async def test_table_and_column_typos_are_both_fixed() -> None:
 
     world = FakeWorld(
         model=FakeModel(
-            entities=[{"table": "sku2", "columns": ["product_id2"]}],
+            entities={"tables": ["sku2"], "columns": ["product_id2"]},
             fixed_sql=BOTH_FIXED_SQL,
         ),
         apply=FakeApply(before_ms=100.0, after_ms=10.0),
@@ -292,7 +292,7 @@ async def test_integration_speedup_cycle_over_real_database(
     """
 
     model = FakeModel(
-        entities=[{"table": "sku", "columns": ["produc_id"]}],
+        entities={"tables": ["sku"], "columns": ["produc_id"]},
         fixed_sql="select * from sku where product_id = 42",
         ddl="CREATE INDEX e2e_sku_product_id_idx ON sku (product_id)",
     )

@@ -4,7 +4,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from sql_query_agent.agent.llm import IndexProposal
+from sql_query_agent.agent.llm import IndexProposal, NameReplacement, SqlFix
 from sql_query_agent.db.catalog import SchemaCatalog
 
 
@@ -15,15 +15,18 @@ class FakeModel:
         self,
         *,
         tool_call: bool = True,
-        entities: list[dict[str, Any]] | None = None,
+        entities: dict[str, Any] | None = None,
         fixed_sql: str = "select * from sku where product_color_id = 1",
         ddl: str = "CREATE INDEX fake_idx ON sku (product_id)",
         reason: str = "индекс по внешнему ключу",
+        replacements: list[dict[str, Any]] | None = None,
     ) -> None:
         self.tool_call = tool_call
-        self.entities = entities if entities is not None else [
-            {"table": "sku", "columns": ["product_colr_id"]}
-        ]
+        self.replacements = replacements
+        self.entities = entities if entities is not None else {
+            "tables": ["sku"],
+            "columns": ["product_colr_id"],
+        }
         self.fixed_sql = fixed_sql
         self.ddl = ddl
         self.reason = reason
@@ -42,18 +45,28 @@ class FakeModel:
             tool_calls=[
                 {
                     "name": "check_schema",
-                    "args": {"entities": self.entities},
+                    "args": dict(self.entities),
                     "id": "call-1",
                     "type": "tool_call",
                 }
             ],
         )
 
-    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> str:
-        """Вернуть исправленный запрос."""
+    async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> SqlFix:
+        """Вернуть исправленный запрос и заявленные замены.
+
+        Если замены не заданы явно, они выводятся из списка ненайденных имён и
+        кандидатов: так тесты графа не дублируют данные инструмента.
+        """
 
         self.fix_calls += 1
-        return self.fixed_sql
+        replacements = self.replacements
+        if replacements is None:
+            replacements = _claimed_replacements(unknown)
+        return SqlFix(
+            sql=self.fixed_sql,
+            replacements=[NameReplacement.model_validate(item) for item in replacements],
+        )
 
     async def propose_index(
         self,
@@ -74,7 +87,7 @@ class FakeChecker:
         self._catalog = catalog
         self.calls = 0
 
-    async def run(self, entities: list[dict[str, Any]]) -> dict[str, Any]:
+    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
         """Проверить имена по каталогу."""
 
         from sql_query_agent.tools.schema_check import check_entities
@@ -82,10 +95,7 @@ class FakeChecker:
         self.calls += 1
         result = check_entities(
             self._catalog,
-            [
-                _to_column_names(entity)
-                for entity in entities
-            ],
+            _to_entities(args),
             threshold=65.0,
             suggestion_limit=3,
         )
@@ -97,12 +107,31 @@ class FakeChecker:
         return None
 
 
-def _to_column_names(entity: dict[str, Any]) -> Any:
-    """Привести словарь к доменной модели."""
+def _claimed_replacements(unknown: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Замены, которые «сделала» подставная модель: по первому кандидату каждого имени."""
 
-    from sql_query_agent.domain import ColumnNames
+    claimed: list[dict[str, Any]] = []
+    for item in unknown:
+        candidates = item.get("candidates") or []
+        if not candidates:
+            continue
+        claimed.append(
+            {
+                "old_name": str(item.get("name") or ""),
+                "new_name": str(candidates[0].get("name") or ""),
+                "kind": str(item.get("kind") or ""),
+                "table": str(item.get("table") or ""),
+            }
+        )
+    return claimed
 
-    return ColumnNames.model_validate(entity)
+
+def _to_entities(args: dict[str, Any]) -> Any:
+    """Привести словарь аргумента к доменной модели."""
+
+    from sql_query_agent.domain import SchemaEntities
+
+    return SchemaEntities.model_validate(args)
 
 
 class FakeMeasure:

@@ -129,15 +129,15 @@ async def test_metered_advisor_counts_calls_by_operation() -> None:
 
     from langchain_core.messages import AIMessage
 
-    from sql_query_agent.agent.llm import IndexProposal
+    from sql_query_agent.agent.llm import IndexProposal, SqlFix
     from sql_query_agent.observability.model_metrics import MeteredAdvisor
 
     class _Model:
         async def extract_identifiers(self, sql: str, tools: list[object]) -> AIMessage:
             return AIMessage(content="")
 
-        async def propose_fix(self, sql: str, unknown: list[dict[str, object]]) -> str:
-            return "select 1"
+        async def propose_fix(self, sql: str, unknown: list[dict[str, object]]) -> SqlFix:
+            return SqlFix(sql="select 1")
 
         async def propose_index(
             self, sql: str, plan_nodes: list[str], stats: dict[str, object]
@@ -145,7 +145,7 @@ async def test_metered_advisor_counts_calls_by_operation() -> None:
             return IndexProposal(ddl="CREATE INDEX i ON sku (product_id)", reason="причина")
 
     class _FailingModel(_Model):
-        async def propose_fix(self, sql: str, unknown: list[dict[str, object]]) -> str:
+        async def propose_fix(self, sql: str, unknown: list[dict[str, object]]) -> SqlFix:
             raise RuntimeError("модель недоступна")
 
     registry = CollectorRegistry()

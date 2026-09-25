@@ -19,8 +19,10 @@ logger = get_logger(__name__)
 
 CHECK_SCHEMA_DESCRIPTION = (
     "Проверить, существуют ли таблицы и колонки из SQL-запроса в базе данных. "
-    "Передай имена точно так, как они написаны в запросе, не исправляя опечатки. "
-    "Для ненайденных имён вернутся похожие существующие названия с оценкой схожести."
+    "Передай таблицы настоящими именами, алиасы парами «алиас=таблица» и колонки точно так, "
+    "как они написаны в запросе, не исправляя опечатки и не решая, какой таблице принадлежит "
+    "колонка. Для ненайденных имён вернутся похожие существующие названия с оценкой схожести, "
+    "а для неоднозначных колонок — таблицы, в которых они есть."
 )
 
 
@@ -51,14 +53,14 @@ class SchemaChecker:
             self._catalog = await load_catalog(self._pool, self._schema)
         return self._catalog
 
-    async def run(self, entities: list[dict[str, Any]]) -> dict[str, Any]:
+    async def run(self, args: dict[str, Any]) -> dict[str, Any]:
         """Проверить переданные имена и вернуть результат словарём."""
 
-        parsed = SchemaEntities.model_validate({"entities": entities})
+        parsed = SchemaEntities.model_validate(args)
         catalog = await self.catalog()
         result = check_entities(
             catalog,
-            parsed.entities,
+            parsed,
             threshold=self._threshold,
             suggestion_limit=self._suggestion_limit,
         )
