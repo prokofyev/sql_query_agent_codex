@@ -1,8 +1,14 @@
 """Состояние графа агента.
 
-Ключи-кэши существуют из-за особенности LangGraph: при возобновлении после
-`interrupt()` узел выполняется заново целиком. Без кэша каждый ответ
-пользователя стоил бы нового обращения к модели и нового замера.
+LangGraph передаёт данные между узлами только через состояние: узел
+возвращает часть ключей, следующий их читает. Здесь же лежит и то, что нужно
+снаружи в точке остановки: из состояния собирается отчёт для API, журнала и
+интерфейса, а на его ключах держатся маршрутизаторы графа.
+
+Отдельная причина хранить дорогие результаты — `interrupt()`: при
+возобновлении LangGraph перезапускает узел с `interrupt()` целиком. Поэтому
+вызовы модели и замеры живут в узлах без `interrupt()`, а их результат
+передаётся подтверждающему узлу через состояние (см. `nodes.py`).
 """
 
 from typing import Any, TypedDict
@@ -13,9 +19,7 @@ class AgentState(TypedDict, total=False):
 
     original_sql: str
     current_sql: str
-    thread_id: str
 
-    entities: list[dict[str, Any]]
     schema_result: dict[str, Any] | None
     schema_checked: bool
     warnings: list[str]
@@ -33,5 +37,4 @@ class AgentState(TypedDict, total=False):
     before_plan_nodes: list[str]
     apply_result: dict[str, Any] | None
 
-    decision: dict[str, Any] | None
     status: str

@@ -83,7 +83,6 @@ async def extract_and_check(
     if args is None:
         logger.warning("модель не вызвала инструмент проверки имён")
         return {
-            "entities": {},
             "schema_result": None,
             "schema_checked": False,
             "warnings": [*_warnings(state), NO_TOOL_CALL_WARNING],
@@ -91,7 +90,6 @@ async def extract_and_check(
 
     result = await checker.run(args)
     return {
-        "entities": args,
         "schema_result": result,
         "schema_checked": True,
     }
