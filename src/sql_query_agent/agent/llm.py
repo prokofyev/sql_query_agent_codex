@@ -154,6 +154,20 @@ def format_ambiguous(unknown: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def describe_tool_calls(response: AIMessage) -> list[dict[str, Any]]:
+    """Описание вызовов инструмента из ответа модели для лога.
+
+    В лог попадают имена инструментов и их аргументы, но не текст запроса и не
+    промпт: именно аргументы показывают, что модель увидела в запросе.
+    """
+
+    described: list[dict[str, Any]] = []
+    for call in getattr(response, "tool_calls", None) or []:
+        if isinstance(call, dict):
+            described.append({"name": call.get("name"), "args": call.get("args")})
+    return described
+
+
 def restore_escaped_newlines(sql: str) -> str:
     """Вернуть настоящие переносы строк в ответе модели.
 
@@ -262,6 +276,7 @@ class GigaChatAdvisor:
         ]
         response = await bound.ainvoke(messages)
         logger.info("модель вернула ответ", tool_calls=len(getattr(response, "tool_calls", [])))
+        logger.debug("ответ модели: извлечение имён", tool_calls=describe_tool_calls(response))
         return response
 
     async def propose_fix(self, sql: str, unknown: list[dict[str, Any]]) -> SqlFix:
@@ -281,7 +296,13 @@ class GigaChatAdvisor:
         sql = result.sql
         if "\\n" in sql and "\n" not in sql:
             sql = restore_escaped_newlines(sql)
-        return result.model_copy(update={"sql": sql.strip()})
+        fix = result.model_copy(update={"sql": sql.strip()})
+        logger.debug(
+            "ответ модели: исправление запроса",
+            sql=fix.sql,
+            replacements=[item.model_dump(mode="json") for item in fix.replacements],
+        )
+        return fix
 
     async def propose_index(
         self,
@@ -304,4 +325,10 @@ class GigaChatAdvisor:
                 )
             ),
         ]
-        return await structured.ainvoke(messages)
+        proposal = await structured.ainvoke(messages)
+        logger.debug(
+            "ответ модели: предложение индекса",
+            ddl=proposal.ddl,
+            reason=proposal.reason,
+        )
+        return proposal

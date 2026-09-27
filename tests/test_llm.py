@@ -1,12 +1,22 @@
 """Тесты адаптера модели: ответов без обращений к GigaChat.
 
 Клиент модели подменяется: проверяется обработка ответа исправления,
-в частности восстановление переносов строк, испорченных транспортом.
+восстановление переносов строк, испорченных транспортом, и подробный лог
+ответов модели.
 """
 
 from typing import Any
 
-from sql_query_agent.agent.llm import GigaChatAdvisor, SqlFix, restore_escaped_newlines
+import pytest
+from langchain_core.messages import AIMessage
+
+from sql_query_agent.agent.llm import (
+    GigaChatAdvisor,
+    IndexProposal,
+    SqlFix,
+    describe_tool_calls,
+    restore_escaped_newlines,
+)
 from sql_query_agent.config import GigaChatSettings
 
 ESCAPED_SQL = "select sku_id,\\n       product_id\\nfrom sku\\nwhere product_id = 42"
@@ -107,3 +117,133 @@ async def test_propose_fix_keeps_correct_answer() -> None:
     fix = await advisor.propose_fix("select * from skuu", UNKNOWN)
 
     assert fix.sql == RESTORED_SQL
+
+
+class _ToolBoundChat:
+    """Подставной клиент модели: возвращает ответ с вызовом инструмента."""
+
+    def __init__(self, response: AIMessage) -> None:
+        self._response = response
+
+    def bind_tools(self, _tools: list[Any]) -> "_ToolBoundChat":
+        """Принять инструменты и вернуть себя."""
+
+        return self
+
+    async def ainvoke(self, _messages: list[Any]) -> AIMessage:
+        """Вернуть заранее заданный ответ."""
+
+        return self._response
+
+
+class _IndexChat:
+    """Подставной клиент модели: возвращает заданное предложение индекса."""
+
+    def __init__(self, proposal: IndexProposal) -> None:
+        self._proposal = proposal
+
+    def with_structured_output(self, _schema: Any) -> "_IndexChat":
+        """Принять схему и вернуть себя."""
+
+        return self
+
+    async def ainvoke(self, _messages: list[Any]) -> IndexProposal:
+        """Вернуть заранее заданное предложение."""
+
+        return self._proposal
+
+
+def test_describe_tool_calls_keeps_names_and_args() -> None:
+    """Описание вызова инструмента содержит имя и аргументы."""
+
+    response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "check_schema",
+                "args": {"tables": ["product"], "columns": ["brand_name"]},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    assert describe_tool_calls(response) == [
+        {"name": "check_schema", "args": {"tables": ["product"], "columns": ["brand_name"]}}
+    ]
+    assert describe_tool_calls(AIMessage(content="нет вызовов")) == []
+
+
+async def test_extraction_logs_tool_arguments(capsys: pytest.CaptureFixture[str]) -> None:
+    """В лог попадает, какие имена модель передала инструменту."""
+
+    response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "check_schema",
+                "args": {"tables": ["product", "brand"], "columns": ["brand_name"]},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    advisor = GigaChatAdvisor(GigaChatSettings(_env_file=None), chat=_ToolBoundChat(response))
+
+    await advisor.extract_identifiers("select brand_name from product", [])
+
+    output = capsys.readouterr().out
+    assert "brand_name" in output
+    assert "вызов".lower() in output.lower() or "tool" in output.lower()
+
+
+async def test_extraction_does_not_log_source_sql(capsys: pytest.CaptureFixture[str]) -> None:
+    """Текст исходного запроса в лог не попадает."""
+
+    source = "select secret_column from secret_table"
+    response = AIMessage(content="", tool_calls=[])
+    advisor = GigaChatAdvisor(GigaChatSettings(_env_file=None), chat=_ToolBoundChat(response))
+
+    await advisor.extract_identifiers(source, [])
+
+    output = capsys.readouterr().out
+    assert "secret_table" not in output
+    assert "secret_column" not in output
+
+
+async def test_fix_logs_answer_and_replacements(capsys: pytest.CaptureFixture[str]) -> None:
+    """В лог попадает исправленный запрос и заявленные замены."""
+
+    chat = _FakeChat(
+        SqlFix(
+            sql=RESTORED_SQL,
+            replacements=[
+                {"old_name": "skuu", "new_name": "sku", "kind": "table", "table": ""}
+            ],
+        )
+    )
+    advisor = GigaChatAdvisor(GigaChatSettings(_env_file=None), chat=chat)
+
+    await advisor.propose_fix("select * from skuu", UNKNOWN)
+
+    output = capsys.readouterr().out
+    assert "исправление запроса" in output
+    assert "skuu" in output
+    assert "sku" in output
+
+
+async def test_index_proposal_is_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    """В лог попадает предложение по индексу."""
+
+    proposal = IndexProposal(
+        ddl="CREATE INDEX ON sku (product_id)",
+        reason="индекс по фильтру",
+    )
+    advisor = GigaChatAdvisor(GigaChatSettings(_env_file=None), chat=_IndexChat(proposal))
+
+    await advisor.propose_index("select 1", ["Seq Scan sku"], {"median_ms": 5.0})
+
+    output = capsys.readouterr().out
+    assert "предложение индекса" in output
+    assert "CREATE INDEX ON sku (product_id)" in output
+    assert "индекс по фильтру" in output

@@ -40,7 +40,7 @@ class ApplyIndexTool:
             applied=outcome.applied,
             error=outcome.error,
         )
-        return {
+        result = {
             "applied": outcome.applied,
             "error": outcome.error,
             "index_ddl": outcome.index_ddl,
@@ -53,6 +53,17 @@ class ApplyIndexTool:
             "before": comparison.before.model_dump(mode="json") if comparison.before else None,
             "after": comparison.after.model_dump(mode="json") if comparison.after else None,
         }
+        logger.debug(
+            "результат применения индекса",
+            applied=result["applied"],
+            error=result["error"],
+            verdict=result["verdict"],
+            speedup=result["speedup"],
+            before=result["before"],
+            after=result["after"],
+            reason=result["reason"],
+        )
+        return result
 
     def as_tool(self) -> StructuredTool:
         """Собрать инструмент для передачи модели."""

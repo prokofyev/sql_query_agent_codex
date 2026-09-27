@@ -1,9 +1,24 @@
-"""Тесты инструмента проверки имён: описание и форма аргументов."""
+"""Тесты инструмента проверки имён: описание, форма аргументов и лог результата."""
 
+import pytest
 from langchain_gigachat.utils.function_calling import convert_to_gigachat_tool
 
+from sql_query_agent.db.catalog import SchemaCatalog
 from sql_query_agent.domain import SchemaEntities
-from sql_query_agent.tools.check_schema import CHECK_SCHEMA_DESCRIPTION
+from sql_query_agent.tools.check_schema import CHECK_SCHEMA_DESCRIPTION, SchemaChecker
+
+
+class _StubChecker(SchemaChecker):
+    """Проверка имён с подставным каталогом: без подключения к базе."""
+
+    def __init__(self, catalog: SchemaCatalog) -> None:
+        super().__init__(None, threshold=65.0, suggestion_limit=3)
+        self._catalog = catalog
+
+    async def catalog(self, *, refresh: bool = False) -> SchemaCatalog:
+        """Вернуть заранее заданный каталог."""
+
+        return self._catalog
 
 
 def _contains_key(node: object, key: str) -> bool:
@@ -55,3 +70,28 @@ def test_description_mentions_expected_input() -> None:
 
     assert "опечатк" in lowered
     assert "похожие" in lowered
+
+
+CATALOG = SchemaCatalog.from_rows(
+    [
+        ("brand", "brand_id"),
+        ("brand", "brand_name"),
+        ("product", "product_id"),
+        ("product", "brand_id"),
+    ]
+)
+
+
+async def test_checker_logs_unknown_names_with_candidates(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """В лог попадают ненайденные имена с предложенными заменами."""
+
+    checker = _StubChecker(CATALOG)
+
+    await checker.run({"tables": ["prodct"], "columns": ["brand_nam"]})
+
+    output = capsys.readouterr().out
+    assert "результат проверки имён" in output
+    assert "prodct" in output
+    assert "brand_nam" in output

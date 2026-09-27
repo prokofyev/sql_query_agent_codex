@@ -86,6 +86,22 @@ def _clear_settings_cache() -> Iterator[None]:
     reset_settings_cache()
 
 
+@pytest.fixture(autouse=True)
+def _debug_logging(capsys: pytest.CaptureFixture[str]) -> Iterator[None]:
+    """Включить подробные логи на время теста.
+
+    Содержимое ответов модели и инструментов пишется на уровне `DEBUG`, а
+    тесты проверяют, что оно попало в лог. Вывод теста всё равно не нужен, а
+    подробный режим не должен менять проверки соседних тестов.
+    """
+
+    from sql_query_agent.logging_setup import configure_logging
+
+    configure_logging(level="DEBUG")
+    yield
+    capsys.readouterr()
+
+
 @pytest.fixture(scope="session")
 def mounted_ui_app() -> Iterator[object]:
     """Приложение с один раз смонтированным интерфейсом.

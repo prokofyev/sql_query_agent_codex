@@ -1,7 +1,9 @@
 """Настройка структурного логирования.
 
-Секреты и тексты запросов в логи не попадают: `credentials` маскируется
-явным фильтром процессора.
+Секреты маскируются фильтром процессора, а содержимое ответов модели и
+инструментов пишется только на уровне `DEBUG`. Логгеры сторонних библиотек
+ограничены уровнем `WARNING`: иначе подробный режим тонет в их шуме, а драйвер
+базы может записать в лог текст выполняемого запроса.
 """
 
 import logging
@@ -12,6 +14,16 @@ import structlog
 
 SENSITIVE_KEYS = frozenset({"credentials", "password", "dsn", "token", "secret"})
 REDACTED = "<redacted>"
+THIRD_PARTY_LEVEL = "WARNING"
+"""Уровень для логгеров сторонних библиотек."""
+
+THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "urllib3", "psycopg", "langchain", "langchain_gigachat")
+"""Логгеры, чей подробный вывод не нужен при разборе прогонов.
+
+Список нужен для библиотек, которые не пробрасывают записи в корневой логгер.
+Остальные закрывает сам корневой уровень: наши логи идут мимо него, поэтому
+`DEBUG` приложения и `WARNING` для чужих библиотек не конфликтуют.
+"""
 
 
 def redact_sensitive(
@@ -27,15 +39,34 @@ def redact_sensitive(
     return event_dict
 
 
-def configure_logging(*, level: str = "INFO", json_logs: bool = False) -> None:
-    """Настроить structlog и стандартный logging."""
+def silence_third_party() -> None:
+    """Ограничить подробный вывод сторонних библиотек."""
 
+    level = getattr(logging, THIRD_PARTY_LEVEL)
+    for name in THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(level)
+
+
+def configure_logging(*, level: str = "INFO", json_logs: bool = False) -> None:
+    """Настроить structlog и стандартный logging.
+
+    Уровень приложения задаётся structlog, а корневой логгер держится на
+    `WARNING`: записи чужих библиотек пишутся через стандартный `logging`, и
+    иначе подробный режим тонул бы в их отладке. Логгеры с собственными
+    обработчиками (uvicorn) настройку не теряют.
+
+    Уровень логгеров не кэшируется: повторный вызов с другим уровнем должен
+    действовать, иначе переключение `INFO` → `DEBUG` не давало бы эффекта.
+    """
+
+    app_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
-        level=getattr(logging, level.upper(), logging.INFO),
+        level=getattr(logging, THIRD_PARTY_LEVEL),
         force=True,
     )
+    silence_third_party()
 
     renderer: Any = (
         structlog.processors.JSONRenderer(ensure_ascii=False)
@@ -51,11 +82,9 @@ def configure_logging(*, level: str = "INFO", json_logs: bool = False) -> None:
             redact_sensitive,
             renderer,
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, level.upper(), logging.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(app_level),
         logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
 

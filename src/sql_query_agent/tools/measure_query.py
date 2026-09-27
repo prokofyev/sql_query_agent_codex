@@ -57,14 +57,16 @@ class QueryMeasureTool:
         try:
             outcome = await self._measurer.measure(sql)
         except SqlNotAllowedError as error:
+            logger.debug("замер отклонён", error=str(error), error_kind="not_allowed")
             return {"ok": False, "error": str(error), "error_kind": "not_allowed"}
         except SqlTimeoutError as error:
+            logger.debug("замер прерван по таймауту", error=str(error))
             return {"ok": False, "error": str(error), "error_kind": "timeout"}
         except Exception as error:  # noqa: BLE001 - ошибка отдаётся модели как данные
             logger.warning("замер не удался", error=str(error))
             return {"ok": False, "error": str(error), "error_kind": "database"}
 
-        return {
+        result = {
             "ok": True,
             "median_ms": outcome.stats.median_ms,
             "minimum_ms": outcome.stats.minimum_ms,
@@ -73,6 +75,16 @@ class QueryMeasureTool:
             "samples_ms": outcome.stats.samples,
             "plan_nodes": summarize_plan(outcome.plan),
         }
+        logger.debug(
+            "результат замера",
+            median_ms=round(result["median_ms"], 3),
+            minimum_ms=round(result["minimum_ms"], 3),
+            maximum_ms=round(result["maximum_ms"], 3),
+            runs=result["runs"],
+            samples_ms=[round(sample, 3) for sample in result["samples_ms"]],
+            plan_nodes=result["plan_nodes"],
+        )
+        return result
 
     def as_tool(self) -> StructuredTool:
         """Собрать инструмент для передачи модели."""

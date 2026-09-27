@@ -70,6 +70,10 @@ class SchemaChecker:
             columns=result.checked_columns,
             unknown=len(result.unknown),
         )
+        logger.debug(
+            "результат проверки имён",
+            unknown=[item.model_dump(mode="json") for item in result.unknown],
+        )
         return result.model_dump(mode="json")
 
     def as_tool(self) -> StructuredTool:

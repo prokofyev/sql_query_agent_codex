@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import pytest
+
 from sql_query_agent.db.explain import QueryMeasurer
 from sql_query_agent.tools.measure_query import QueryMeasureTool, summarize_plan
 
@@ -113,3 +115,23 @@ async def test_database_error_is_returned_as_data() -> None:
     assert result["ok"] is False
     assert result["error_kind"] == "database"
     assert "relation does not exist" in result["error"]
+
+
+async def test_successful_measure_is_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    """В лог попадает содержимое замера: медиана, разброс и узлы плана."""
+
+    await _tool(PLAN).run("select 1")
+
+    output = capsys.readouterr().out
+    assert "результат замера" in output
+    assert "12.5" in output
+    assert "Seq Scan sku" in output
+
+
+async def test_measure_error_is_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    """Отклонённый замер тоже виден в логе."""
+
+    await _tool(PLAN).run("delete from brand")
+
+    output = capsys.readouterr().out
+    assert "замер отклонён" in output
